@@ -10,6 +10,7 @@ holds; the runner checks this itself before it calls msb. Egress is denied for e
 egress.py). Every msb command line is kept in StepResult.host_commands for the receipt.
 """
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -22,11 +23,20 @@ from dataclasses import dataclass, field
 MSB = os.environ.get("PQPROOF_MSB", "msb")
 LABEL = "app=pqproof"
 GRACE_S = 5
+KEEP = 1 << 20  # bytes kept of each output stream: its first and last 512 KiB
+DRAIN_S = 5
 NAME_PART = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 
 
 class SandboxError(RuntimeError):
     pass
+
+
+class Captured(str):
+    """One output stream as text: all of it, or its first and last KEEP // 2 bytes with a marker
+    between them. `total` and `sha256` describe every byte the process wrote to the stream."""
+    total = 0
+    sha256 = hashlib.sha256().hexdigest()
 
 
 @dataclass(frozen=True)
@@ -44,8 +54,8 @@ class StepResult:
     limits: Limits
     started_at: float
     exit_code: int | None = None
-    stdout: str = ""
-    stderr: str = ""
+    stdout: str = Captured("")
+    stderr: str = Captured("")
     timed_out: bool = False
     destroyed_at: float | None = None
     host_commands: list = field(default_factory=list)
@@ -58,13 +68,67 @@ def msb_env():
     return {k: v for k, v in os.environ.items() if k in ("PATH", "HOME") or k.startswith("MSB_")}
 
 
+def captured(head, tail=b"", total=None, sha256=None):
+    """Captured text from kept bytes. Without total and sha256, head + tail is the whole stream."""
+    head, tail = bytes(head), bytes(tail)
+    total = len(head) + len(tail) if total is None else total
+    omitted = total - len(head) - len(tail)
+    if omitted > 0:
+        text = f"{head.decode(errors='replace')}\n[... {omitted} bytes not kept ...]\n{tail.decode(errors='replace')}"
+    else:
+        text = (head + tail).decode(errors="replace")
+    out = Captured(text)
+    out.total, out.sha256 = total, sha256 or hashlib.sha256(head + tail).hexdigest()
+    return out
+
+
+class _Drain:
+    """Reads one pipe in a thread: keeps its first and last KEEP // 2 bytes, counts and hashes all."""
+
+    def __init__(self, pipe):
+        self.head, self.tail, self.total, self.hash = bytearray(), bytearray(), 0, hashlib.sha256()
+        self.thread = threading.Thread(target=self._read, args=(pipe,), daemon=True)
+        self.thread.start()
+
+    def _read(self, pipe):
+        half = KEEP // 2
+        try:
+            while chunk := pipe.read1(1 << 16):
+                self.hash.update(chunk)
+                self.total += len(chunk)
+                room = half - len(self.head)
+                if room > 0:
+                    self.head += chunk[:room]
+                    chunk = chunk[room:]
+                self.tail += chunk
+                del self.tail[:-half]
+        except (OSError, ValueError):  # pipe closed under us
+            pass
+
+    def result(self):
+        self.thread.join(DRAIN_S)  # a process that left a child holding the pipe does not block us
+        return captured(self.head, self.tail, self.total, self.hash.hexdigest())
+
+
 def run_cmd(argv, timeout=None):
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
-                          env=msb_env())
+    """Run a command with msb_env(). stdout and stderr come back as Captured text, so a step that
+    floods its output cannot fill the control plane's memory."""
+    with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          env=msb_env()) as p:
+        out, err = _Drain(p.stdout), _Drain(p.stderr)
+        try:
+            rc = p.wait(timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+            raise subprocess.TimeoutExpired(argv, timeout, output=out.result(), stderr=err.result()) from None
+        return subprocess.CompletedProcess(argv, rc, out.result(), err.result())
 
 
-def _text(data):
-    return data.decode(errors="replace") if isinstance(data, bytes) else (data or "")
+def _as_captured(data):
+    if isinstance(data, Captured):
+        return data
+    return captured(data if isinstance(data, bytes) else (data or "").encode())
 
 
 class Runner:
@@ -108,9 +172,9 @@ class Runner:
             try:
                 r = self._msb(res.host_commands, "exec", "--no-stdin", name, "--", *argv,
                               timeout=remaining + GRACE_S)
-                res.exit_code, res.stdout, res.stderr = r.returncode, r.stdout, r.stderr
+                res.exit_code, res.stdout, res.stderr = r.returncode, _as_captured(r.stdout), _as_captured(r.stderr)
             except subprocess.TimeoutExpired as e:
-                res.stdout, res.stderr = _text(e.stdout), _text(e.stderr)
+                res.stdout, res.stderr = _as_captured(e.stdout), _as_captured(e.stderr)
             res.timed_out = self._clock() - started >= limits.wall_clock_s
         finally:
             r = self._msb(res.host_commands, "rm", "--force", "-q", name)

@@ -5,6 +5,7 @@ Unit tests use a fake msb. Integration tests run the real `msb` when it is insta
 (default 5 s; run once with 120 to check the real limit).
 """
 import datetime
+import hashlib
 import json
 import os
 import pathlib
@@ -16,7 +17,7 @@ import time
 import unittest
 
 from helpers import allow, msb_available, pinned
-from pqproof.sandbox import LABEL, MSB, Limits, Runner, SandboxError, run_cmd
+from pqproof.sandbox import KEEP, LABEL, MSB, Limits, Runner, SandboxError, run_cmd
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 T0 = 1_793_718_000.0  # 2026-11-03T16:20:00Z
@@ -154,6 +155,45 @@ class RunStep(unittest.TestCase):
         self.assertEqual(create[-2:], ["--", image])
 
 
+class BoundedOutput(unittest.TestCase):
+    """A step that floods its output must not fill the control plane's memory."""
+    MIB = 1 << 20
+
+    def child(self, code, timeout=30):
+        return run_cmd([sys.executable, "-c", code], timeout=timeout)
+
+    def test_large_stream_keeps_head_and_tail_and_hashes_all_of_it(self):
+        r = self.child("import sys; w = sys.stdout.buffer.write; [w(c * (1 << 20)) for c in (b'A', b'B', b'C')]; "
+                       "sys.stderr.write('E' * 10)")
+        full = b"A" * self.MIB + b"B" * self.MIB + b"C" * self.MIB
+        self.assertEqual(KEEP, self.MIB)
+        self.assertLess(len(r.stdout.encode()), KEEP + 100)
+        self.assertTrue(r.stdout.startswith("A" * (KEEP // 2) + "\n[... "))
+        self.assertTrue(r.stdout.endswith("]\n" + "C" * (KEEP // 2)))
+        self.assertIn(f"{2 * self.MIB} bytes not kept", r.stdout)
+        self.assertEqual((r.stdout.total, r.stdout.sha256), (len(full), hashlib.sha256(full).hexdigest()))
+        self.assertEqual((r.stderr, r.stderr.total), ("E" * 10, 10))
+
+    def test_small_stream_is_kept_whole(self):
+        r = self.child("print('hello')")
+        self.assertEqual((r.returncode, r.stdout, r.stdout.total), (0, "hello\n", 6))
+        self.assertEqual(r.stdout.sha256, hashlib.sha256(b"hello\n").hexdigest())
+
+    def test_timeout_keeps_what_arrived(self):
+        t = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired) as cm:
+            self.child("import time; print('partial', flush=True); time.sleep(30)", timeout=2)
+        self.assertLess(time.monotonic() - t, 10)
+        self.assertEqual(cm.exception.stdout, "partial\n")
+
+    def test_step_result_carries_size_and_hash(self):
+        clock = Clock()
+        msb = FakeMsb(clock, exec_result=lambda argv, timeout: done(argv, 0, "out\n", "err"))
+        res = Runner(run=msb, clock=clock).run_step(allow(IMG, ["true"]), "j", "s", IMG, ["true"])
+        self.assertEqual((res.stdout, res.stdout.total, res.stderr.total), ("out\n", 4, 3))
+        self.assertEqual(res.stdout.sha256, hashlib.sha256(b"out\n").hexdigest())
+
+
 class Environment(unittest.TestCase):
     """msb hands its environment to each sandbox's VMM process; the API key must not be in it."""
 
@@ -245,6 +285,15 @@ class RealMsb(unittest.TestCase):
         self.assertEqual(second.exit_code, 0)
         self.assertIn("DONE", out["first"].stdout, out["first"].stderr)
         self.assertNotEqual(out["first"].name, second.name)
+
+    def test_stdout_flood_is_bounded(self):
+        size = 64 << 20
+        argv = ["sh", "-c", f"head -c {size} /dev/zero | tr '\\0' a"]
+        res = self.step("flood", argv, Limits(memory_mib=256, wall_clock_s=30))
+        self.assertEqual(res.exit_code, 0, res.stderr)
+        self.assertLess(len(res.stdout.encode()), KEEP + 100)
+        self.assertEqual(res.stdout.total, size)
+        self.assertEqual(res.stdout.sha256, hashlib.sha256(b"a" * size).hexdigest())
 
     def test_vmm_process_does_not_hold_the_api_key(self):
         fake, seen = "pqproof-itest-not-a-key-51c2", []
