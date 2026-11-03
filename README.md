@@ -24,7 +24,7 @@ browser --HTTPS--> control plane (Python, Vultr VX1)
 
 Both ids come from Vultr's public model list. **Re-check them against `https://api.vultrinference.com/v1/models` after the hackathon kickoff**, and confirm that tool calls work, before a real run. The list shows `tools` for both models but no `tool_choice`, so the client never sends `tool_choice`.
 
-`pqproof/inference.py` calls `POST /v1/chat/completions` with `Authorization: Bearer`, parses `tool_calls` (arguments that are not a JSON object come back as an error on that call instead of an exception), and retries HTTP 429 and 5xx with backoff, honouring `Retry-After`. It reads the key from `VULTR_INFERENCE_API_KEY`; keep the key outside the repository. The client does not follow redirects, so the `Authorization` header cannot be carried to another host, and it redacts the key from any error text, including a server's own error message.
+`pqproof/inference.py` calls `POST /v1/chat/completions` with `Authorization: Bearer` and retries HTTP 429 and 5xx with backoff, honouring `Retry-After`. It does not trust `tool_calls`, because a prompt injection in the target repo can steer the model: a call to a tool the request did not declare, or with arguments that are not a JSON object, repeat a key, miss a required field, add an undeclared one or have the wrong type, comes back with an error on that call and no arguments. Any other malformed response raises `InferenceError`, and call ids are made unique. It reads the key from `VULTR_INFERENCE_API_KEY`; keep the key outside the repository. The client does not follow redirects, so the `Authorization` header cannot be carried to another host, and it redacts the key from any error text, including a server's own error message.
 
 ## Plan and allowlist
 

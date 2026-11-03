@@ -18,9 +18,16 @@ from pqproof.inference import Client, InferenceError, parse_reply, tool_result
 
 FIX = pathlib.Path(__file__).resolve().parent / "fixtures" / "inference"
 KEY = "test-key-not-real-0123456789"
-TOOLS = [{"type": "function", "function": {
-    "name": "read_file", "description": "Read one file from the repo snapshot",
-    "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}}]
+TOOLS = [
+    {"type": "function", "function": {
+        "name": "read_file", "description": "Read one file from the repo snapshot",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"],
+                       "additionalProperties": False}}},
+    {"type": "function", "function": {
+        "name": "write_file", "description": "Replace one file in the repo snapshot",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                       "required": ["path", "content"], "additionalProperties": False}}},
+]
 
 
 def body(name):
@@ -112,6 +119,80 @@ class ToolCallParsing(unittest.TestCase):
     def test_response_without_choices(self):
         with self.assertRaises(InferenceError):
             parse_reply({"object": "chat.completion"})
+
+
+def reply_with(tool_calls=None, message=None):
+    msg = message if message is not None else {"role": "assistant", "content": None, "tool_calls": tool_calls}
+    return json.dumps({"choices": [{"message": msg, "finish_reason": "tool_calls"}]}).encode()
+
+
+def call_with(arguments, name="read_file", **extra):
+    return {"id": "a", "type": "function", "function": {"name": name, "arguments": arguments}, **extra}
+
+
+class MalformedModelOutput(unittest.TestCase):
+    """A prompt injection in the target repo can steer the model, so its output is checked."""
+
+    def chat(self, body_):
+        c, _ = client(FakeSend((200, {}, body_)))
+        return c.chat([{"role": "user", "content": "x"}], tools=TOOLS)
+
+    def test_only_inference_error_escapes(self):
+        cases = {
+            "tool_call is a string": reply_with(["read_file"]),
+            "function is a string": reply_with([{"id": "a", "function": "read_file"}]),
+            "tool_calls is an object": reply_with({"id": "a"}),
+            "message is a string": reply_with(message="hello"),
+            "choices is a string": b'{"choices": "x"}',
+            "body is a list": b"[1, 2]",
+            "nesting too deep": b'{"choices": ' + b"[" * 100000 + b"]" * 100000 + b"}",
+        }
+        for name, body_ in cases.items():
+            with self.subTest(name), self.assertRaises(InferenceError):
+                self.chat(body_)
+
+    def test_deeply_nested_arguments_become_a_call_error(self):
+        args = '{"a":' * 100000 + "1" + "}" * 100000  # RecursionError on Python 3.12
+        call = self.chat(reply_with([call_with(args)])).tool_calls[0]
+        self.assertIsNotNone(call.error)
+        self.assertIsNone(call.arguments)
+
+    def test_undeclared_tool_is_flagged(self):
+        call = self.chat(reply_with([call_with('{"cmd": "id"}', name="run_shell")])).tool_calls[0]
+        self.assertIn("not declared", call.error)
+        self.assertIsNone(call.arguments)
+
+    def test_arguments_outside_the_schema_are_flagged(self):
+        for raw, why in (('{"path": ["go.mod", "../../etc/passwd"]}', "must be string"),
+                         ("{}", "missing"), ('{"path": "go.mod", "mode": "0777"}', "unknown"),
+                         ('{"path": true}', "must be string")):
+            with self.subTest(raw):
+                call = self.chat(reply_with([call_with(raw)])).tool_calls[0]
+                self.assertIn(why, call.error or "")
+                self.assertIsNone(call.arguments)
+
+    def test_duplicate_keys_are_flagged(self):
+        # json.loads keeps the last value; a log or UI showing the first one would disagree.
+        call = self.chat(reply_with([call_with('{"path": "go.mod", "path": "../../.ssh/id_ed25519"}')])).tool_calls[0]
+        self.assertIn("duplicate", call.error or "")
+        self.assertIsNone(call.arguments)
+
+    def test_ids_are_unique_strings_and_the_message_carries_them(self):
+        reply = self.chat(reply_with([
+            {"id": "call_1", "function": {"name": "read_file", "arguments": '{"path": "a"}'}},
+            {"function": {"name": "read_file", "arguments": '{"path": "b"}'}},   # would get call_1 too
+            {"id": {"x": 1}, "function": {"name": "read_file", "arguments": '{"path": "c"}'}},
+            {"id": "call_1", "function": {"name": "read_file", "arguments": '{"path": "d"}'}},
+        ]))
+        ids = [c.id for c in reply.tool_calls]
+        self.assertTrue(all(isinstance(i, str) and i for i in ids), ids)
+        self.assertEqual(len(set(ids)), 4, ids)
+        self.assertEqual(ids[0], "call_1")
+        self.assertEqual([tc["id"] for tc in reply.message["tool_calls"]], ids)  # history matches tool results
+
+    def test_valid_calls_still_parse(self):
+        reply = self.chat(body("tool_calls_two.json"))
+        self.assertEqual([(c.name, c.error) for c in reply.tool_calls], [("read_file", None), ("write_file", None)])
 
 
 class Retries(unittest.TestCase):

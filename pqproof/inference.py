@@ -50,35 +50,95 @@ class Reply:
     message: dict = field(default_factory=dict)  # the assistant message, to append to history as-is
 
 
-def _parse_tool_call(index, tc):
-    fn = tc.get("function") or {}
-    raw = fn.get("arguments")
+JSON_TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "array": list, "object": dict}
+
+
+def _object(pairs):
+    obj = dict(pairs)
+    if len(obj) != len(pairs):  # json.loads would keep the last value silently
+        raise ValueError(f"duplicate key in {sorted(k for k, _ in pairs)}")
+    return obj
+
+
+def _check_arguments(name, args, declared):
+    """Why a call does not fit the tools the request declared, or None. Checks the tool name,
+    required and unknown (additionalProperties: false) arguments and top-level JSON types."""
+    if declared is None:
+        return None
+    if name not in declared:
+        return f"tool {name!r} was not declared in this request"
+    schema = declared[name] or {}
+    props = schema.get("properties") or {}
+    missing = [k for k in schema.get("required") or [] if k not in args]
+    if missing:
+        return f"missing required arguments {missing}"
+    unknown = sorted(set(args) - set(props))
+    if unknown and schema.get("additionalProperties") is False:
+        return f"unknown arguments {unknown}"
+    for key, value in args.items():
+        kind = (props.get(key) or {}).get("type")
+        want = JSON_TYPES.get(kind)
+        if want and (not isinstance(value, want) or (isinstance(value, bool) and want is not bool)):
+            return f"argument {key!r} must be {kind}"
+    return None
+
+
+def _parse_tool_call(index, tc, declared):
+    fn = tc["function"]
+    raw, cid, name = fn.get("arguments"), tc.get("id"), fn.get("name")
     # Vultr's chat docs show a tool call without "id"; synthesize one so tool results can refer to it.
-    call = ToolCall(id=tc.get("id") or f"call_{index}", name=fn.get("name") or "", arguments=None,
+    call = ToolCall(id=cid if isinstance(cid, str) and cid else f"call_{index}",
+                    name=name if isinstance(name, str) else "", arguments=None,
                     raw_arguments=raw if isinstance(raw, str) else ("" if raw is None else json.dumps(raw)))
     if isinstance(raw, dict):
-        call.arguments = raw
-        return call
-    try:
-        args = json.loads(raw) if raw else {}
-    except (TypeError, ValueError) as e:
-        call.error = f"arguments are not valid JSON: {e}"
-        return call
+        args = raw
+    else:
+        try:
+            args = json.loads(raw, object_pairs_hook=_object) if raw else {}
+        except (TypeError, ValueError, RecursionError) as e:
+            call.error = f"arguments are not valid JSON: {e}"
+            return call
     if not isinstance(args, dict):
         call.error = f"arguments must be a JSON object, got {type(args).__name__}"
         return call
-    call.arguments = args
+    call.error = _check_arguments(call.name, args, declared)
+    if call.error is None:
+        call.arguments = args
     return call
 
 
-def parse_reply(body):
-    """Turn a chat.completions response body (dict) into a Reply."""
+def parse_reply(body, tools=None):
+    """Turn a chat.completions response body (dict) into a Reply. Raises InferenceError only.
+
+    The model's output can be steered by a prompt injection in the target repo, so it is not
+    trusted: with `tools`, a call to an undeclared tool or with arguments outside its parameters
+    comes back with `error` set and `arguments` None. Call ids are made unique strings, and
+    Reply.message carries those ids so the history matches the tool results.
+    """
     try:
         choice = body["choices"][0]
         message = choice["message"]
     except (KeyError, IndexError, TypeError):
         raise InferenceError("response has no choices[0].message") from None
-    calls = [_parse_tool_call(i, tc) for i, tc in enumerate(message.get("tool_calls") or [])]
+    if not isinstance(choice, dict) or not isinstance(message, dict):
+        raise InferenceError("choices[0].message must be a JSON object")
+    raw_calls = message.get("tool_calls") or []
+    if not isinstance(raw_calls, list) or not all(
+            isinstance(tc, dict) and isinstance(tc.get("function"), dict) for tc in raw_calls):
+        raise InferenceError("tool_calls must be a list of objects, each with a function object")
+    declared = None if tools is None else {t["function"]["name"]: t["function"].get("parameters") for t in tools}
+    calls, seen = [], set()
+    for i, tc in enumerate(raw_calls):
+        try:
+            call = _parse_tool_call(i, tc, declared)
+        except RecursionError:  # arguments sent as a deeply nested object
+            call = ToolCall(id=f"call_{i}", name="", arguments=None, raw_arguments="", error="arguments nest too deeply")
+        while call.id in seen:
+            call.id += "_"
+        seen.add(call.id)
+        calls.append(call)
+    if raw_calls:
+        message = {**message, "tool_calls": [{**tc, "id": c.id} for tc, c in zip(raw_calls, calls)]}
     return Reply(content=message.get("content"), tool_calls=calls,
                  finish_reason=choice.get("finish_reason"), usage=body.get("usage") or {},
                  model=body.get("model"), message=message)
@@ -161,9 +221,10 @@ class Client:
                 continue
             if status == 200:
                 try:
-                    return parse_reply(json.loads(body))
-                except ValueError:
-                    raise self._error("response is not JSON", status) from None
+                    reply = json.loads(body)
+                except (ValueError, RecursionError):
+                    raise self._error("response is not JSON (or nests too deeply)", status) from None
+                return parse_reply(reply, tools)
             if status in RETRY_STATUS and not last:
                 self._sleep(self._delay(attempt, resp_headers))
                 continue
