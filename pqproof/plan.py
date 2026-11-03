@@ -4,6 +4,10 @@ The allowlist works at the level of commands, paths and images. It has no egress
 sandboxes get no network destinations at all, build included. Content changes inside an
 approved file (for example `InsecureSkipVerify: true`) are a job for the TLS-weakening check
 on the diff, not for this module.
+
+Paths are checked as strings. A symlink committed in the target repo can still point an allowed
+path outside the snapshot, so the code that applies edits has to resolve each path and refuse
+anything that leaves the snapshot root (or open it with O_NOFOLLOW).
 """
 import posixpath
 import re
@@ -40,6 +44,7 @@ PROGRAMS = {
     "go": ("build|test|vet", rf"{GO_PACKAGE}|-v|-count=1|-mod=vendor|-trimpath"),
     "nginx": (None, rf"-t|-q|-c|-p|{ABS_PATH}"),
 }
+PATH_CHARS = re.compile(r"[A-Za-z0-9._/-]+")
 # Base images: Docker Hub official images pinned by digest, `name[:tag]@sha256:<64 hex>`. A tag
 # alone is not a pin (the registry owner can move it); it may stay next to the digest for the
 # approver to read. Other registries are refused, so a look-alike name cannot slip in.
@@ -55,15 +60,17 @@ class PlanError(ValueError):
 
 def clean_path(path):
     """Repo-relative POSIX path, or PlanError."""
-    if not isinstance(path, str) or not path or "\\" in path or "\0" in path:
+    if not isinstance(path, str) or not path:
         raise PlanError(f"bad path {path!r}")
+    if not PATH_CHARS.fullmatch(path):  # no control characters for logs, no Unicode look-alikes
+        raise PlanError(f"path has characters outside [A-Za-z0-9._/-]: {path!r}")
     if path.startswith("/"):
         raise PlanError(f"absolute path {path!r}")
     norm = posixpath.normpath(path)
     parts = norm.split("/")
     if norm == "." or ".." in parts:
         raise PlanError(f"path leaves the repo: {path!r}")
-    if parts[0] == ".git":
+    if any(p.casefold() == ".git" for p in parts):  # any depth, any case (APFS ignores case)
         raise PlanError(f"path inside .git: {path!r}")
     return norm
 
