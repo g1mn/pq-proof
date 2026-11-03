@@ -5,6 +5,8 @@ without a key. The chat.completion fixtures follow the response shape in Vultr's
 guide (tool_calls with ids like "functions.<name>:<n>"); their content is written for PQ-Proof.
 error_429/503 follow the 401 envelope. Replace them with recorded responses once a key exists.
 """
+import contextlib
+import gc
 import http.server
 import json
 import pathlib
@@ -12,9 +14,10 @@ import threading
 import traceback
 import unittest
 import urllib.error
+import warnings
 
 from pqproof import inference
-from pqproof.inference import Client, InferenceError, parse_reply, tool_result
+from pqproof.inference import Client, InferenceError, parse_reply, tool_result, urllib_send
 
 FIX = pathlib.Path(__file__).resolve().parent / "fixtures" / "inference"
 KEY = "test-key-not-real-0123456789"
@@ -28,6 +31,18 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
                        "required": ["path", "content"], "additionalProperties": False}}},
 ]
+
+
+@contextlib.contextmanager
+def serve(handler):
+    """A loopback HTTP server for `handler`; yields its base URL and closes its socket afterwards."""
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}"
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 def body(name):
@@ -303,32 +318,43 @@ class KeyLeaks(unittest.TestCase):
             def log_message(self, *a):
                 pass
 
-        other = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Elsewhere)
-        target = f"http://127.0.0.1:{other.server_address[1]}/collect"
+        with serve(Elsewhere) as other:
+            class Redirects(http.server.BaseHTTPRequestHandler):
+                def do_POST(self):
+                    self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                    self.send_response(302)
+                    self.send_header("Location", f"{other}/collect")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
 
-        class Redirects(http.server.BaseHTTPRequestHandler):
+                def log_message(self, *a):
+                    pass
+
+            with serve(Redirects) as api:
+                c = Client(api_key=KEY, base_url=f"{api}/v1", max_attempts=1)
+                with self.assertRaises(InferenceError) as cm:
+                    c.chat([{"role": "user", "content": "x"}])
+        self.assertEqual(seen, [])
+        self.assertEqual(cm.exception.status, 302)
+
+    def test_error_responses_are_closed(self):
+        class Unauthorized(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
                 self.rfile.read(int(self.headers.get("Content-Length") or 0))
-                self.send_response(302)
-                self.send_header("Location", target)
-                self.send_header("Content-Length", "0")
+                self.send_response(401)
+                self.send_header("Content-Length", "2")
                 self.end_headers()
+                self.wfile.write(b"{}")
 
             def log_message(self, *a):
                 pass
 
-        api = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Redirects)
-        for srv in (other, api):
-            threading.Thread(target=srv.serve_forever, daemon=True).start()
-        try:
-            c = Client(api_key=KEY, base_url=f"http://127.0.0.1:{api.server_address[1]}/v1", max_attempts=1)
-            with self.assertRaises(InferenceError) as cm:
-                c.chat([{"role": "user", "content": "x"}])
-        finally:
-            other.shutdown()
-            api.shutdown()
-        self.assertEqual(seen, [])
-        self.assertEqual(cm.exception.status, 302)
+        with serve(Unauthorized) as api, warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            status, _, data = urllib_send(f"{api}/v1/chat/completions", {}, b"{}", 5)
+            gc.collect()
+        self.assertEqual((status, data), (401, b"{}"))
+        self.assertEqual([str(w.message) for w in caught if w.category is ResourceWarning], [])
 
 
 class Key(unittest.TestCase):

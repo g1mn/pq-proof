@@ -175,7 +175,8 @@ def urllib_send(url, headers, data, timeout):
         with _OPENER.open(req, timeout=timeout) as r:
             return r.status, dict(r.headers), r.read()
     except urllib.error.HTTPError as e:
-        return e.code, dict(e.headers or {}), e.read()
+        with e:  # an HTTPError holds the open response
+            return e.code, dict(e.headers or {}), e.read()
 
 
 class Client:
