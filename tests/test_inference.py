@@ -5,9 +5,13 @@ without a key. The chat.completion fixtures follow the response shape in Vultr's
 guide (tool_calls with ids like "functions.<name>:<n>"); their content is written for PQ-Proof.
 error_429/503 follow the 401 envelope. Replace them with recorded responses once a key exists.
 """
+import http.server
 import json
 import pathlib
+import threading
+import traceback
 import unittest
+import urllib.error
 
 from pqproof import inference
 from pqproof.inference import Client, InferenceError, parse_reply, tool_result
@@ -153,6 +157,74 @@ class Retries(unittest.TestCase):
         self.assertEqual((cm.exception.status, len(send.calls), sleeps), (401, 1, []))
         self.assertIn("No API key provided", str(cm.exception))
         self.assertNotIn(KEY, str(cm.exception))
+
+
+class KeyLeaks(unittest.TestCase):
+    def test_key_echoed_by_the_server_is_redacted(self):
+        body_ = json.dumps({"error": {"code": 401, "message": f"Invalid API key: {KEY}"}}).encode()
+        c, _ = client(FakeSend((401, {}, body_)))
+        with self.assertRaises(InferenceError) as cm:
+            c.chat([{"role": "user", "content": "x"}])
+        self.assertNotIn(KEY, str(cm.exception))
+        self.assertIn("Invalid API key: ***", str(cm.exception))
+
+    def test_key_in_a_network_error_is_redacted(self):
+        c, _ = client(FakeSend(*[urllib.error.URLError(f"proxy refused Bearer {KEY}")] * 4))
+        with self.assertRaises(InferenceError) as cm:
+            c.chat([{"role": "user", "content": "x"}])
+        self.assertNotIn(KEY, str(cm.exception))
+
+    def test_traceback_locals_do_not_hold_the_key(self):
+        # Error reporters that capture frame locals (Sentry, unittest -l, pytest --showlocals) print them.
+        c, _ = client(FakeSend((401, {}, body("error_401.json"))))
+        try:  # not assertRaises: it drops the traceback
+            c.chat([{"role": "user", "content": "x"}])
+            self.fail("no exception")
+        except InferenceError as e:
+            text = "".join(traceback.TracebackException.from_exception(e, capture_locals=True).format())
+        self.assertIn("chat", text)
+        self.assertNotIn(KEY, text)
+
+    def test_redirect_is_not_followed(self):
+        """A 302 from the API host must not carry the Bearer key to the place it points to."""
+        seen = []
+
+        class Elsewhere(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *a):
+                pass
+
+        other = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Elsewhere)
+        target = f"http://127.0.0.1:{other.server_address[1]}/collect"
+
+        class Redirects(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        api = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Redirects)
+        for srv in (other, api):
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            c = Client(api_key=KEY, base_url=f"http://127.0.0.1:{api.server_address[1]}/v1", max_attempts=1)
+            with self.assertRaises(InferenceError) as cm:
+                c.chat([{"role": "user", "content": "x"}])
+        finally:
+            other.shutdown()
+            api.shutdown()
+        self.assertEqual(seen, [])
+        self.assertEqual(cm.exception.status, 302)
 
 
 class Key(unittest.TestCase):

@@ -1,8 +1,11 @@
 """Vultr Serverless Inference client: OpenAI-compatible chat completions with tool calls.
 
-Only the control plane imports this module. The API key comes from the environment and
-is never put into messages, logs or exceptions.
+Only the control plane imports this module. The API key comes from the environment and is
+never put into messages, logs or exceptions: error text is redacted, the Authorization header
+is built inside the call (not held in chat()'s locals), and redirects are not followed, so the
+header cannot be carried to another origin.
 """
+import http.client
 import json
 import os
 import time
@@ -97,10 +100,18 @@ def _error_message(body):
     return body[:200].decode(errors="replace") if isinstance(body, bytes) else str(body)[:200]
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None  # the 3xx comes back as an HTTP error instead of being followed
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def urllib_send(url, headers, data, timeout):
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _OPENER.open(req, timeout=timeout) as r:
             return r.status, dict(r.headers), r.read()
     except urllib.error.HTTPError as e:
         return e.code, dict(e.headers or {}), e.read()
@@ -116,6 +127,12 @@ class Client:
         self.timeout, self.max_attempts, self.backoff = timeout, max_attempts, backoff
         self._send, self._sleep = send, sleep
 
+    def _headers(self):
+        return {"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"}
+
+    def _error(self, message, status=None):
+        return InferenceError(message.replace(self._key, "***"), status)
+
     def _delay(self, attempt, headers):
         retry_after = {k.lower(): v for k, v in (headers or {}).items()}.get("retry-after")
         try:
@@ -130,22 +147,21 @@ class Client:
         if tools:
             payload["tools"] = tools
         data = json.dumps(payload).encode()
-        headers = {"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"}
         for attempt in range(1, self.max_attempts + 1):
             last = attempt == self.max_attempts
             try:
-                status, resp_headers, body = self._send(self.url, headers, data, self.timeout)
-            except OSError as e:  # URLError, timeouts, connection resets
+                status, resp_headers, body = self._send(self.url, self._headers(), data, self.timeout)
+            except (OSError, http.client.HTTPException) as e:  # URLError, timeouts, resets, short reads
                 if last:
-                    raise InferenceError(f"network error after {attempt} attempts: {e}") from None
+                    raise self._error(f"network error after {attempt} attempts: {e}") from None
                 self._sleep(self._delay(attempt, None))
                 continue
             if status == 200:
                 try:
                     return parse_reply(json.loads(body))
                 except ValueError:
-                    raise InferenceError("response is not JSON", status) from None
+                    raise self._error("response is not JSON", status) from None
             if status in RETRY_STATUS and not last:
                 self._sleep(self._delay(attempt, resp_headers))
                 continue
-            raise InferenceError(f"HTTP {status} after {attempt} attempt(s): {_error_message(body)}", status)
+            raise self._error(f"HTTP {status} after {attempt} attempt(s): {_error_message(body)}", status)
