@@ -1,0 +1,24 @@
+{
+  "id": "chatcmpl-c1b2a39485f6e7d8c9b0a1f2e3d4c5b6",
+  "object": "chat.completion",
+  "created": 1793718180,
+  "model": "glm-5.3",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "functions.write_file:0",
+            "type": "function",
+            "function": {"name": "write_file", "arguments": "{\"path\": \"main.go\", \"content\": \"package main"}
+          }
+        ]
+      },
+      "finish_reason": "length"
+    }
+  ],
+  "usage": {"prompt_tokens": 900, "completion_tokens": 512, "total_tokens": 1412}
+}

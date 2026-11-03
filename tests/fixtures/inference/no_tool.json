@@ -1,0 +1,17 @@
+{
+  "id": "chatcmpl-5e4d3c2b1a0948f7e6d5c4b3a2918070",
+  "object": "chat.completion",
+  "created": 1793718120,
+  "model": "deepseek-v4.1-flash-1017",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The build failed because go.mod asks for Go 1.21 and the image ships Go 1.25."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 2048, "completion_tokens": 22, "total_tokens": 2070}
+}

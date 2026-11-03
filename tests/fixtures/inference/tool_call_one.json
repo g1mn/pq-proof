@@ -1,0 +1,27 @@
+{
+  "id": "chatcmpl-7f3d0c1e9b2a4c58a1d6e0f4b3c2a190",
+  "object": "chat.completion",
+  "created": 1793718000,
+  "model": "glm-5.3",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "I'll read the nginx config first.",
+        "tool_calls": [
+          {
+            "id": "functions.read_file:0",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"nginx/nginx.conf\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {"prompt_tokens": 812, "completion_tokens": 41, "total_tokens": 853}
+}
