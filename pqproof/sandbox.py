@@ -16,6 +16,8 @@ import logging
 import os
 import re
 import secrets
+import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -133,6 +135,138 @@ def _as_captured(data):
     return captured(data if isinstance(data, bytes) else (data or "").encode())
 
 
+GUEST_PATH = re.compile(r"(?:/(?!\.\.?(?:/|$))[A-Za-z0-9_.-]+)+")  # no "." or ".." segments
+ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+@dataclass
+class Exec:
+    argv: list
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+
+
+class Session:
+    """A microVM that lives for several actions: copy files in, run commands, start servers in the
+    background, copy one built file out. Same limits, label, network policy and cleanup as
+    Runner.run_step, and the same rule: every command must be in the approved allowlist.
+
+        with runner.session(allow, "job1", "build", image) as s:
+            s.copy_in(snapshot_dir, "/work/src")
+            s.exec(["make", "test"], workdir="/work/src")
+    """
+
+    def __init__(self, runner, allow, job, step, image, limits=Limits()):
+        for part in (job, step):
+            if not NAME_PART.match(part):
+                raise ValueError(f"job and step must match {NAME_PART.pattern}: {part!r}")
+        if not allow.allows_image(image):
+            raise SandboxError(f"image is not in the approved allowlist: {image!r}")
+        self.runner, self.allow, self.image, self.limits = runner, allow, image, limits
+        self.started_at = runner._clock()
+        self.name = f"pq-{int(self.started_at)}-{job}-{step}-{secrets.token_hex(4)}"
+        self.host_commands, self.execs, self.destroyed_at = [], [], None
+
+    def __enter__(self):
+        lim = self.limits
+        try:
+            r = self.runner._msb(self.host_commands, "create", "-q", "--name", self.name,
+                                 "--cpus", str(lim.cpus), "--memory", f"{lim.memory_mib}M",
+                                 "--max-duration", f"{lim.wall_clock_s}s", "--label", LABEL,
+                                 "--pull", "never", *self.runner.net_args(), "--", self.image)
+            if r.returncode != 0:
+                raise SandboxError(f"msb create failed: {r.stderr.strip()[-300:]}")
+        except BaseException:
+            self._destroy()
+            raise
+        return self
+
+    def __exit__(self, *exc):
+        self._destroy()
+
+    def _destroy(self):
+        r = self.runner._msb(self.host_commands, "rm", "--force", "-q", self.name)
+        if r.returncode == 0 or not self.runner._exists(self.name):
+            self.destroyed_at = self.runner._clock()
+
+    def remaining(self):
+        return max(1.0, self.started_at + self.limits.wall_clock_s - self.runner._clock())
+
+    def _check(self, argv, env, workdir):
+        if not self.allow.allows_command(argv):
+            raise SandboxError(f"command is not in the approved allowlist: {list(argv)!r}")
+        opts = []
+        for k, v in (env or {}).items():
+            if not ENV_NAME.fullmatch(k) or not re.fullmatch(r"[A-Za-z0-9_.,:/=-]*", v):
+                raise SandboxError(f"environment entry not allowed: {k!r}")
+            opts += ["-e", f"{k}={v}"]
+        if workdir is not None:
+            if not GUEST_PATH.fullmatch(workdir):
+                raise SandboxError(f"workdir must be an absolute guest path: {workdir!r}")
+            opts += ["-w", workdir]
+        return opts
+
+    def exec(self, argv, env=None, workdir=None):
+        """Run argv to completion inside the microVM. Returns Exec (also kept in self.execs)."""
+        opts = self._check(argv, env, workdir)
+        try:
+            r = self.runner._msb(self.host_commands, "exec", "--no-stdin", *opts, self.name, "--", *argv,
+                                 timeout=self.remaining() + GRACE_S)
+            res = Exec(list(argv), r.returncode, _as_captured(r.stdout), _as_captured(r.stderr))
+        except subprocess.TimeoutExpired as e:
+            res = Exec(list(argv), None, _as_captured(e.stdout), _as_captured(e.stderr), timed_out=True)
+        self.execs.append(res)
+        return res
+
+    def start(self, argv, env=None, workdir=None):
+        """Start argv as a background job inside the microVM (msb exec -d). Returns the job id.
+        The job ends with the microVM."""
+        opts = self._check(argv, env, workdir)
+        r = self.runner._msb(self.host_commands, "exec", "-d", *opts, self.name, "--", *argv)
+        if r.returncode != 0:
+            raise SandboxError(f"msb exec -d failed: {r.stderr.strip()[-300:]}")
+        return str(r.stdout).strip()
+
+    def copy_in(self, src, dest):
+        """Copy a host file or directory to an absolute guest path. Symlinks are copied as links."""
+        if not GUEST_PATH.fullmatch(dest):
+            raise SandboxError(f"guest path must be absolute: {dest!r}")
+        if not os.path.lexists(src):
+            raise SandboxError(f"nothing to copy at {src!r}")
+        r = self.runner._msb(self.host_commands, "copy", "-q", os.fspath(src), f"{self.name}:{dest}")
+        if r.returncode != 0:
+            raise SandboxError(f"msb copy in failed: {r.stderr.strip()[-300:]}")
+
+    def copy_out(self, src, dest_dir):
+        """Copy one guest file into dest_dir and return its host path. The guest is untrusted, so
+        anything that does not land as a regular file (a symlink, a directory) is removed and refused."""
+        if not GUEST_PATH.fullmatch(src):
+            raise SandboxError(f"guest path must be absolute: {src!r}")
+        dest = os.path.join(dest_dir, posixpath_basename(src))
+        if os.path.lexists(dest):
+            raise SandboxError(f"refusing to overwrite {dest!r}")
+        r = self.runner._msb(self.host_commands, "copy", "-q", f"{self.name}:{src}", dest)
+        if r.returncode != 0:
+            raise SandboxError(f"msb copy out failed: {r.stderr.strip()[-300:]}")
+        try:
+            st = os.lstat(dest)
+        except FileNotFoundError:
+            raise SandboxError(f"msb copy out produced nothing at {dest!r}") from None
+        if not stat.S_ISREG(st.st_mode):
+            if stat.S_ISDIR(st.st_mode) and not os.path.islink(dest):
+                shutil.rmtree(dest)
+            else:
+                os.unlink(dest)
+            raise SandboxError(f"{src} is not a regular file in the guest")
+        return dest
+
+
+def posixpath_basename(path):
+    return path.rstrip("/").rsplit("/", 1)[-1]
+
+
 class Runner:
     def __init__(self, msb=MSB, run=run_cmd, clock=time.time, egress=None):
         self.msb, self._run, self._clock, self.egress = msb, run, clock, egress
@@ -183,6 +317,10 @@ class Runner:
             if r.returncode == 0 or not self._exists(name):  # the reaper may have removed it first
                 res.destroyed_at = self._clock()
         return res
+
+    def session(self, allow, job, step, image, limits=Limits()):
+        """One microVM for several actions: Session (use it as a context manager)."""
+        return Session(self, allow, job, step, image, limits)
 
     def _exists(self, name):
         try:

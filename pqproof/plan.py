@@ -39,10 +39,17 @@ PLAN_SCHEMA = {
 TARGET = r"[A-Za-z0-9][A-Za-z0-9_.-]*"
 GO_PACKAGE = r"\.(?:/[A-Za-z0-9_.-]+)*(?:/\.\.\.)?"  # ., ./..., ./cmd/api
 ABS_PATH = r"(?:/[A-Za-z0-9_.-]+)+"
+SEGMENT = r"[A-Za-z0-9_-][A-Za-z0-9_.-]*"  # never "." or "..", never hidden
+REL_OUT = rf"(?:{SEGMENT}/)*{SEGMENT}"  # go build -o=out/api: inside the work tree
+LOOPBACK = r"127\.0\.0\.1:[0-9]{1,5}"  # servers are probed inside their own microVM
 PROGRAMS = {
     "make": (None, TARGET),
-    "go": ("build|test|vet", rf"{GO_PACKAGE}|-v|-count=1|-mod=vendor|-trimpath"),
+    "go": ("build|test|vet", rf"{GO_PACKAGE}|-v|-count=1|-mod=vendor|-trimpath|-o={REL_OUT}"),
     "nginx": (None, rf"-t|-q|-c|-p|{ABS_PATH}"),
+    # PQ-Proof's own fixed-version TLS client and reference server (prove.py), not repo code.
+    "tls_probe": ("version|cert|serve|connect",
+                  rf"-(?:groups|hosts)=[A-Za-z0-9_.,-]+|-(?:ca|cert|key)={ABS_PATH}|-servername=[A-Za-z0-9.-]+"
+                  rf"|-addr={LOOPBACK}|-wait=[0-9]{{1,3}}s|{LOOPBACK}|{ABS_PATH}"),
 }
 PATH_CHARS = re.compile(r"[A-Za-z0-9._/-]+")
 # Base images: Docker Hub official images pinned by digest, `name[:tag]@sha256:<64 hex>`. A tag
@@ -121,6 +128,11 @@ class Allowlist:
 
     def allows_image(self, ref):
         return ref in self.images
+
+    def union(self, other):
+        """Both allowlists together: for adding the control plane's own fixed commands (the probe)."""
+        return Allowlist(commands=self.commands | other.commands, paths=self.paths | other.paths,
+                         images=self.images | other.images)
 
     def to_json(self):
         return {"commands": sorted(list(c) for c in self.commands),

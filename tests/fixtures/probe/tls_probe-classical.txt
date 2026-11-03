@@ -1,0 +1,6 @@
+probe: tls_probe 0.1.0 (go1.27.3)
+target: 127.0.0.1:4433
+offered: X25519,P-256
+result: connected
+protocol: TLS 1.3
+group: X25519
