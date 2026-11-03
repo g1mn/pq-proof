@@ -40,10 +40,13 @@ PROGRAMS = {
     "go": ("build|test|vet", rf"{GO_PACKAGE}|-v|-count=1|-mod=vendor|-trimpath"),
     "nginx": (None, rf"-t|-q|-c|-p|{ABS_PATH}"),
 }
+# Base images: Docker Hub official images pinned by digest, `name[:tag]@sha256:<64 hex>`. A tag
+# alone is not a pin (the registry owner can move it); it may stay next to the digest for the
+# approver to read. Other registries are refused, so a look-alike name cannot slip in.
 IMAGE_RE = re.compile(
-    r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*"  # [registry/]repo path
-    r"(?::(?P<tag>[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}))?"
-    r"(?:@sha256:(?P<digest>[0-9a-f]{64}))?$")
+    r"(?P<repo>[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*)"
+    r"(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}")
+OFFICIAL = re.compile(r"(?:docker\.io/library/|library/)?[a-z0-9]+(?:[._-][a-z0-9]+)*")
 
 
 class PlanError(ValueError):
@@ -86,13 +89,11 @@ def check_command(argv):
 
 
 def check_image(ref):
-    m = IMAGE_RE.match(ref) if isinstance(ref, str) else None
+    m = IMAGE_RE.fullmatch(ref) if isinstance(ref, str) else None
     if not m:
-        raise PlanError(f"bad image reference {ref!r}")
-    if not (m["tag"] or m["digest"]):
-        raise PlanError(f"image must be pinned by tag or digest: {ref!r}")
-    if m["tag"] == "latest" and not m["digest"]:
-        raise PlanError(f"image tag 'latest' is not a pin: {ref!r}")
+        raise PlanError(f"image must be pinned by digest, name[:tag]@sha256:<64 hex>: {ref!r}")
+    if not OFFICIAL.fullmatch(m["repo"]):
+        raise PlanError(f"image must be a Docker Hub official image: {ref!r}")
     return ref
 
 

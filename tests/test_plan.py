@@ -15,7 +15,7 @@ PLAN = {
         {"path": "Dockerfile", "why": "base image ships OpenSSL 3.0"},
     ],
     "commands": [["make", "test"], ["go", "build", "./..."], ["nginx", "-t", "-c", "/work/nginx/nginx.conf"]],
-    "images": ["golang:1.25-bookworm", f"nginx@sha256:{DIGEST}"],
+    "images": [f"golang:1.25-bookworm@sha256:{DIGEST}", f"nginx@sha256:{DIGEST}"],
 }
 
 
@@ -65,15 +65,20 @@ class Compile(unittest.TestCase):
 
     def test_images(self):
         cases = [
-            ("golang:1.25-bookworm", True),
+            (f"golang:1.25-bookworm@sha256:{DIGEST}", True),
             (f"nginx@sha256:{DIGEST}", True),
-            ("golang:1.25", False),
-            ("nginx:1.27", False),
-            ("evil.example.com/golang:1.25-bookworm", False),
+            ("golang:1.25-bookworm", False),          # the tag alone is not what was approved
+            (f"golang:1.25-bookworm@sha256:{'b' * 64}", False),
+            (f"evil.example.com/golang:1.25-bookworm@sha256:{DIGEST}", False),
         ]
         for ref, ok in cases:
             with self.subTest(ref=ref):
                 self.assertEqual(self.allow.allows_image(ref), ok)
+
+    def test_official_image_spellings(self):
+        for ref in (f"docker.io/library/nginx@sha256:{DIGEST}", f"library/nginx:1.29@sha256:{DIGEST}"):
+            with self.subTest(ref=ref):
+                self.assertTrue(compile_allowlist(plan_with(images=[ref])).allows_image(ref))
 
     def test_no_egress_field_anywhere(self):
         self.assertEqual(set(self.allow.to_json()), {"commands", "paths", "images"})
@@ -122,11 +127,20 @@ class Reject(unittest.TestCase):
         (".git edit", plan_with(edits=[{"path": ".git/config", "why": "x"}]), "inside .git"),
         ("edit without why", plan_with(edits=[{"path": "go.mod"}]), "exactly 'path' and 'why'"),
         ("edit extra key", plan_with(edits=[{"path": "go.mod", "why": "x", "mode": "0777"}]), "exactly"),
-        ("untagged image", plan_with(images=["golang"]), "pinned by tag or digest"),
-        ("latest image", plan_with(images=["nginx:latest"]), "'latest' is not a pin"),
-        ("uppercase image", plan_with(images=["Golang:1.25"]), "bad image reference"),
-        ("image with space", plan_with(images=["golang:1.25 --privileged"]), "bad image reference"),
-        ("image not a string", plan_with(images=[{"ref": "golang:1.25"}]), "bad image reference"),
+        ("untagged image", plan_with(images=["golang"]), "pinned by digest"),
+        ("latest image", plan_with(images=["nginx:latest"]), "pinned by digest"),
+        ("tag only", plan_with(images=["golang:1.25-bookworm"]), "pinned by digest"),
+        ("floating tag", plan_with(images=["alpine:edge"]), "pinned by digest"),
+        ("short digest", plan_with(images=["nginx@sha256:abc"]), "pinned by digest"),
+        ("uppercase image", plan_with(images=[f"Golang:1.25@sha256:{DIGEST}"]), "pinned by digest"),
+        ("image with space", plan_with(images=[f"golang:1.25 --privileged@sha256:{DIGEST}"]), "pinned by digest"),
+        ("trailing newline", plan_with(images=[f"nginx@sha256:{DIGEST}\n"]), "pinned by digest"),
+        ("option-like image", plan_with(images=[f"--conf=/tmp/x@sha256:{DIGEST}"]), "pinned by digest"),
+        ("image not a string", plan_with(images=[{"ref": "golang:1.25"}]), "pinned by digest"),
+        ("other registry", plan_with(images=[f"evil.example.com/golang:1.25@sha256:{DIGEST}"]), "Docker Hub"),
+        ("ghcr", plan_with(images=[f"ghcr.io/attacker/golang:1.25@sha256:{DIGEST}"]), "Docker Hub"),
+        ("look-alike", plan_with(images=[f"docker.io.evil.example/library/golang@sha256:{DIGEST}"]), "Docker Hub"),
+        ("non-library repo", plan_with(images=[f"attacker/golang@sha256:{DIGEST}"]), "Docker Hub"),
     ]
 
     def test_rejections(self):
