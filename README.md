@@ -32,11 +32,11 @@ A human approves the model's plan (JSON; the schema is `PLAN_SCHEMA` in `pqproof
 
 ## Containment
 
-Each step runs in a fresh Microsandbox microVM with its own kernel. The control plane creates it with `--cpus`, `--memory` and `--max-duration` (defaults: 1 vCPU, 1 GiB, 120 s), labels it `app=pqproof`, and lets it use only images the control plane has already pulled (`--pull never`). The host also times `msb exec` and always runs `msb rm --force` afterwards. A reaper removes any labelled sandbox past its lifetime at startup and every minute, so a crashed control plane leaves nothing running. Every `msb` command line is kept for the receipt.
+Each step runs in a fresh Microsandbox microVM with its own kernel. The control plane creates it with `--cpus`, `--memory` and `--max-duration` (defaults: 1 vCPU, 1 GiB, 120 s), labels it `app=pqproof`, and lets it use only images the control plane has already pulled (`--pull never`). The runner itself refuses any image or command line that the step's approved allowlist does not hold, and passes the image after `--` so it is never read as an `msb` option. The host also times `msb exec` and always runs `msb rm --force` afterwards. A reaper removes any labelled sandbox past its lifetime at startup and every minute, so a crashed control plane leaves nothing running. Every `msb` command line is kept for the receipt.
 
 Egress is denied for every step, the build included. DNS goes only to a resolver on the host that records the queries it receives and answers NXDOMAIN instead of forwarding them. TCP to `203.0.113.0/24`, a documentation range that is never routed, goes through Microsandbox's `--proxy` to a host sinkhole that records the destination and the bytes; that is how the demo shows a planted test hook's canary. Everything else, including the host and the control plane API, is dropped by Microsandbox's network policy, and a dead sinkhole does not open a direct route. The demo hook uses plain HTTP so the sinkhole can read the canary; HTTPS attempts are recorded as encrypted bytes only.
 
-Integration tests (`tests/test_sandbox.py`, `tests/test_egress.py`) run real microVMs when `msb` is installed; set `PQPROOF_MSB_TESTS=0` to skip them and `PQPROOF_WALL_S=120` to check the full wall clock. So far they have run on macOS (Apple Silicon) with msb 0.7.13; they still have to be run on the Vultr VX1 host.
+Integration tests (`tests/test_sandbox.py`, `tests/test_egress.py`) run real microVMs whenever `msb` is installed; set `PQPROOF_MSB_TESTS=0` to skip them and `PQPROOF_WALL_S=120` to check the full wall clock. They pin `alpine` by the digest of the copy in the local cache, so they use the network only when that cache is empty. So far they have run on macOS (Apple Silicon) with msb 0.7.13; they still have to be run on the Vultr VX1 host.
 
 ## Development
 
@@ -44,7 +44,7 @@ Integration tests (`tests/test_sandbox.py`, `tests/test_egress.py`) run real mic
 python3 -m unittest discover -s tests -v
 ```
 
-Unit tests need no network and no API key.
+Unit tests need no network and no API key. If `msb` is installed, this command also runs the integration tests (real microVMs, and `msb pull alpine` when the image is not cached yet); `PQPROOF_MSB_TESTS=0 python3 -m unittest discover -s tests -v` runs the unit tests alone.
 
 ## License
 

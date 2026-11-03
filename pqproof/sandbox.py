@@ -5,8 +5,9 @@ Three layers keep a step bounded and leave nothing behind:
 2. A host-side timeout on `msb exec`, then `msb rm --force` in a finally block.
 3. A reaper loop that removes any pqproof-labelled sandbox past its lifetime, so a crashed
    control plane cannot leave microVMs running.
-Egress is denied for every step (see egress.py). Every msb command line is kept in
-StepResult.host_commands for the receipt.
+A step runs only an image and a command line that its approved allowlist (plan.Allowlist)
+holds; the runner checks this itself before it calls msb. Egress is denied for every step (see
+egress.py). Every msb command line is kept in StepResult.host_commands for the receipt.
 """
 import datetime
 import json
@@ -70,11 +71,18 @@ class Runner:
         log.append(argv)
         return self._run(argv, timeout=timeout)
 
-    def run_step(self, job, step, image, argv, limits=Limits()):
-        """Create a microVM, run argv in it, destroy it. Returns a StepResult."""
+    def run_step(self, allow, job, step, image, argv, limits=Limits()):
+        """Create a microVM from `image`, run argv in it, destroy it. Returns a StepResult.
+
+        `allow` is the approved plan.Allowlist; anything it does not hold is refused before msb runs.
+        """
         for part in (job, step):
             if not NAME_PART.match(part):
                 raise ValueError(f"job and step must match {NAME_PART.pattern}: {part!r}")
+        if not allow.allows_image(image):
+            raise SandboxError(f"image is not in the approved allowlist: {image!r}")
+        if not allow.allows_command(argv):
+            raise SandboxError(f"command is not in the approved allowlist: {list(argv)!r}")
         started = self._clock()
         name = f"pq-{int(started)}-{job}-{step}"
         res = StepResult(name=name, image=image, argv=list(argv), limits=limits, started_at=started)
@@ -82,7 +90,7 @@ class Runner:
             r = self._msb(res.host_commands, "create", "-q", "--name", name,
                           "--cpus", str(limits.cpus), "--memory", f"{limits.memory_mib}M",
                           "--max-duration", f"{limits.wall_clock_s}s", "--label", LABEL,
-                          "--pull", "never", *self.net_args(), image)
+                          "--pull", "never", *self.net_args(), "--", image)
             if r.returncode != 0:
                 raise SandboxError(f"msb create failed: {r.stderr.strip()[-300:]}")
             remaining = max(1.0, started + limits.wall_clock_s - self._clock())

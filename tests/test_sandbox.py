@@ -8,17 +8,18 @@ import datetime
 import json
 import os
 import pathlib
-import shutil
 import signal
 import subprocess
 import sys
 import time
 import unittest
 
+from helpers import allow, msb_available, pinned
 from pqproof.sandbox import LABEL, MSB, Limits, Runner, SandboxError
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 T0 = 1_793_718_000.0  # 2026-11-03T16:20:00Z
+IMG = "alpine@sha256:" + "0" * 64
 
 
 def done(argv, rc=0, out="", err=""):
@@ -64,14 +65,18 @@ class RunStep(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
 
+    def step(self, msb, image=IMG, argv=("true",), limits=Limits(), job="j", step="s"):
+        return Runner(msb="msb", run=msb, clock=self.clock).run_step(allow(image, argv), job, step, image,
+                                                                      list(argv), limits)
+
     def test_limits_labels_and_cleanup(self):
         msb = FakeMsb(self.clock)
-        res = Runner(msb="msb", run=msb, clock=self.clock).run_step("job1", "build", "golang:1.25-bookworm",
-                                                                     ["make", "test"])
+        go = f"golang:1.25-bookworm@sha256:{'1' * 64}"
+        res = self.step(msb, go, ["make", "test"], job="job1", step="build")
         create, exec_, rm = res.host_commands
         self.assertEqual(create, ["msb", "create", "-q", "--name", f"pq-{int(T0)}-job1-build", "--cpus", "1",
                                   "--memory", "1024M", "--max-duration", "120s", "--label", LABEL,
-                                  "--pull", "never", "--no-net", "golang:1.25-bookworm"])
+                                  "--pull", "never", "--no-net", "--", go])
         self.assertEqual(exec_, ["msb", "exec", "--no-stdin", res.name, "--", "make", "test"])
         self.assertEqual(rm, ["msb", "rm", "--force", "-q", res.name])
         self.assertEqual((res.exit_code, res.stdout, res.timed_out), (0, "ok\n", False))
@@ -80,7 +85,7 @@ class RunStep(unittest.TestCase):
 
     def test_exec_timeout_is_the_remaining_wall_clock(self):
         msb = FakeMsb(self.clock)
-        Runner(run=msb, clock=self.clock).run_step("j", "s", "alpine", ["true"], Limits(wall_clock_s=30))
+        self.step(msb, limits=Limits(wall_clock_s=30))
         exec_timeout = [t for a, t in msb.calls if a[1] == "exec"][0]
         self.assertEqual(exec_timeout, 30 + 5)
 
@@ -89,7 +94,7 @@ class RunStep(unittest.TestCase):
             self.clock.now += timeout  # the host timer fires
             return subprocess.TimeoutExpired(argv, timeout, output=b"partial", stderr=b"")
         msb = FakeMsb(self.clock, exec_result=hang)
-        res = Runner(run=msb, clock=self.clock).run_step("j", "s", "alpine", ["sleep", "600"])
+        res = self.step(msb, argv=["sleep", "600"])
         self.assertTrue(res.timed_out)
         self.assertIsNone(res.exit_code)
         self.assertEqual(res.stdout, "partial")
@@ -100,28 +105,43 @@ class RunStep(unittest.TestCase):
         def killed(argv, timeout):  # msb --max-duration ended the VM first
             self.clock.now += 120
             return done(argv, 1, err="error: exec session ended without exit event")
-        res = Runner(run=FakeMsb(self.clock, exec_result=killed), clock=self.clock).run_step(
-            "j", "s", "alpine", ["sleep", "600"])
+        res = self.step(FakeMsb(self.clock, exec_result=killed), argv=["sleep", "600"])
         self.assertTrue(res.timed_out)
         self.assertEqual(res.exit_code, 1)
 
     def test_exception_during_exec_still_destroys(self):
         msb = FakeMsb(self.clock, exec_result=OSError("msb vanished"))
         with self.assertRaises(OSError):
-            Runner(run=msb, clock=self.clock).run_step("j", "s", "alpine", ["true"])
+            self.step(msb)
         self.assertEqual(msb.boxes, {})
         self.assertEqual(msb.calls[-1][0][1], "rm")
 
     def test_create_failure(self):
         msb = FakeMsb(self.clock, create_rc=1)
         with self.assertRaises(SandboxError):
-            Runner(run=msb, clock=self.clock).run_step("j", "s", "alpine", ["true"])
+            self.step(msb)
         self.assertNotIn("exec", [a[1] for a, _ in msb.calls])
 
     def test_names_are_checked(self):
         for bad in ("Job", "a b", "a/b", "", "x" * 50):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                Runner(run=FakeMsb(self.clock), clock=self.clock).run_step(bad, "s", "alpine", ["true"])
+                self.step(FakeMsb(self.clock), job=bad)
+
+    def test_runs_only_what_the_allowlist_holds(self):
+        approved = allow(IMG, ["make", "test"])
+        for image, argv in ((IMG, ["make", "test", "EXTRA=1"]), (IMG, ["sh", "-c", "id"]),
+                            ("alpine@sha256:" + "f" * 64, ["make", "test"]), ("alpine", ["make", "test"])):
+            msb = FakeMsb(self.clock)
+            with self.subTest(image=image, argv=argv), self.assertRaises(SandboxError):
+                Runner(run=msb, clock=self.clock).run_step(approved, "j", "s", image, argv)
+            self.assertEqual(msb.calls, [], "no msb call before the allowlist check")
+
+    def test_image_is_never_read_as_an_msb_option(self):
+        image = "--conf=/tmp/attacker.yaml"  # even if an allowlist were built by hand around one
+        msb = FakeMsb(self.clock)
+        self.step(msb, image=image)
+        create = msb.calls[0][0]
+        self.assertEqual(create[-2:], ["--", image])
 
 
 class Reaper(unittest.TestCase):
@@ -153,17 +173,14 @@ class Reaper(unittest.TestCase):
         self.assertEqual(msb.boxes, {})
 
 
-def msb_available():
-    return os.environ.get("PQPROOF_MSB_TESTS", "1") != "0" and shutil.which(MSB) is not None
-
-
 @unittest.skipUnless(msb_available(), "msb not installed")
 class RealMsb(unittest.TestCase):
-    IMAGE = "alpine"
-
     @classmethod
     def setUpClass(cls):
-        subprocess.run([MSB, "pull", "-q", cls.IMAGE], check=True, capture_output=True, timeout=300)
+        cls.IMAGE = pinned("alpine")
+
+    def step(self, name, argv, limits):
+        return Runner().run_step(allow(self.IMAGE, argv), "itest", name, self.IMAGE, argv, limits)
 
     def names(self):
         return {s["name"] for s in Runner().list()}
@@ -171,8 +188,7 @@ class RealMsb(unittest.TestCase):
     def test_sleep_600_is_cut_at_the_wall_clock(self):
         wall = int(os.environ.get("PQPROOF_WALL_S", "5"))
         t = time.monotonic()
-        res = Runner().run_step("itest", "wall", self.IMAGE, ["sleep", "600"],
-                                Limits(cpus=1, memory_mib=256, wall_clock_s=wall))
+        res = self.step("wall", ["sleep", "600"], Limits(cpus=1, memory_mib=256, wall_clock_s=wall))
         elapsed = time.monotonic() - t
         self.assertLess(elapsed, wall + 5)
         self.assertTrue(res.timed_out)
@@ -180,14 +196,15 @@ class RealMsb(unittest.TestCase):
         self.assertNotIn(res.name, self.names())
 
     def test_limits_are_applied_inside_the_vm(self):
-        res = Runner().run_step("itest", "limits", self.IMAGE, ["nproc"], Limits(cpus=1, memory_mib=256))
+        res = self.step("limits", ["nproc"], Limits(cpus=1, memory_mib=256))
         self.assertEqual((res.exit_code, res.stdout.strip()), (0, "1"))
 
     def test_reaper_removes_what_a_killed_control_plane_left(self):
-        code = ("from pqproof.sandbox import Runner, Limits; "
-                "Runner().run_step('itest', 'orphan', 'alpine', ['sleep', '600'], Limits(wall_clock_s=60))")
-        env = {**os.environ, "PYTHONPATH": str(ROOT)}
-        cp = subprocess.Popen([sys.executable, "-c", code], env=env, start_new_session=True,
+        code = ("import sys; from helpers import allow; from pqproof.sandbox import Runner, Limits; "
+                "img, argv = sys.argv[1], ['sleep', '600']; "
+                "Runner().run_step(allow(img, argv), 'itest', 'orphan', img, argv, Limits(wall_clock_s=60))")
+        env = {**os.environ, "PYTHONPATH": f"{ROOT}{os.pathsep}{ROOT / 'tests'}"}
+        cp = subprocess.Popen([sys.executable, "-c", code, self.IMAGE], env=env, start_new_session=True,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             orphan = None
