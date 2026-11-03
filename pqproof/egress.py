@@ -9,6 +9,10 @@ is set with msb flags rather than host firewall rules:
   destination, and `--proxy` sends it to the sinkhole's HTTP CONNECT listener, which logs the
   destination and the bytes. Plain HTTP shows the payload; HTTPS shows only a ClientHello.
 If the sinkhole is down the proxied connection fails; msb does not fall back to a direct route.
+
+Untrusted code decides how much it sends, so the sinkhole is bounded: at most MAX_CONNS TCP
+connections are served at once (more are closed unread and counted), and at most MAX_EVENTS
+events are kept between take() calls (more are counted; canary ids are still collected).
 """
 import hashlib
 import re
@@ -19,13 +23,17 @@ import time
 
 SINK_CIDR = "203.0.113.0/24"
 CANARY_RE = re.compile(rb"CANARY-\d{4}")
-MAX_CAPTURE = 64 * 1024
+MAX_CAPTURE = 64 * 1024  # bytes read from one connection
+MAX_CONNS = 16  # connections served at once
+MAX_EVENTS = 1000  # events kept in detail between take() calls
+EGRESS_OPS = "200/1s"  # guest packet rate msb lets out (measured: a DNS flood drops from ~2,000 to ~70 queries/s)
 
 
 class Sinkhole:
     def __init__(self, host="127.0.0.1", read_timeout=5.0):
         self.host, self.read_timeout = host, read_timeout
-        self.events, self._lock, self._socks = [], threading.Lock(), []
+        self.events, self.dropped, self._canaries = [], 0, set()
+        self._lock, self._socks, self._slots = threading.Lock(), [], threading.BoundedSemaphore(MAX_CONNS)
 
     def start(self):
         tcp = socket.create_server((self.host, 0))
@@ -48,18 +56,32 @@ class Sinkhole:
         self.stop()
 
     def msb_args(self):
+        # The last two flags slow a flooding guest down inside msb, before it reaches the sinkhole.
         return ["--no-net", "--net-rule", f"allow@dns,allow@{SINK_CIDR}:tcp",
                 "--dns-nameserver", f"{self.host}:{self.dns_port}",
-                "--proxy", f"http://{self.host}:{self.tcp_port}"]
+                "--proxy", f"http://{self.host}:{self.tcp_port}",
+                "--max-tcp-connections", str(2 * MAX_CONNS), "--net-egress-ops", EGRESS_OPS]
 
     def canaries(self):
+        """Every canary id seen since start, including those in events that were only counted."""
         with self._lock:
-            return sorted({c for e in self.events for c in e["canaries"]})
+            return sorted(self._canaries)
+
+    def take(self):
+        """(events, dropped) since the last take(), and start a new window. Call it after each step."""
+        with self._lock:
+            taken = self.events, self.dropped
+            self.events, self.dropped = [], 0
+        return taken
 
     def _record(self, **event):
         event["t"] = time.time()
         with self._lock:
-            self.events.append(event)
+            self._canaries.update(event["canaries"])
+            if len(self.events) < MAX_EVENTS:
+                self.events.append(event)
+            else:
+                self.dropped += 1
 
     def _accept(self, srv):
         while True:
@@ -67,6 +89,11 @@ class Sinkhole:
                 conn, _ = srv.accept()
             except OSError:
                 return
+            if not self._slots.acquire(blocking=False):
+                conn.close()
+                with self._lock:
+                    self.dropped += 1
+                continue
             threading.Thread(target=self._tcp, args=(conn,), daemon=True).start()
 
     def _tcp(self, conn):
@@ -102,6 +129,7 @@ class Sinkhole:
             pass
         finally:
             conn.close()
+            self._slots.release()
 
     def _dns(self, udp):
         while True:

