@@ -28,7 +28,7 @@ Both ids come from Vultr's public model list. **Re-check them against `https://a
 
 ## Plan and allowlist
 
-A human approves the model's plan (JSON; the schema is `PLAN_SCHEMA` in `pqproof/plan.py`). The approved plan compiles into an allowlist of exact command lines, repo-relative file paths and base images. An image must be a Docker Hub official image pinned by digest, such as `golang:1.25-bookworm@sha256:<64 hex>`; a tag alone is refused because the registry owner can move it, and so is any other registry. A command may use only `make` (targets), `go` (`build`, `test` or `vet` on packages, a few fixed flags, and `-o=` a path inside the work tree), `nginx` (`-t`, `-c` with absolute config paths) and PQ-Proof's own `tls_probe` (fixed subcommands, loopback addresses and absolute paths only); every other program is refused, and so is any argument outside those shapes, such as `go build -toolexec`, `make --eval` or `nginx -g`. That limits what the model can ask for. It does not make the repository's own code safe: `make test` runs the repo's Makefile recipes with `/bin/sh` and `go test` runs its test code. That code is untrusted and runs only inside a microVM with egress denied, which is the real boundary (see Containment). The plan has no field for egress hosts because sandboxes get none. The allowlist does not read file contents: a change like `InsecureSkipVerify: true` inside an approved file is caught by a deterministic TLS-weakening check on the diff (*planned*).
+A human approves the model's plan (JSON; the schema is `PLAN_SCHEMA` in `pqproof/plan.py`). The approved plan compiles into an allowlist of exact command lines, repo-relative file paths and base images. An image must be a Docker Hub official image pinned by digest, such as `golang:1.25-bookworm@sha256:<64 hex>`; a tag alone is refused because the registry owner can move it, and so is any other registry. A command may use only `make` (targets), `go` (`build`, `test` or `vet` on packages, a few fixed flags, and `-o=` a path inside the work tree), `nginx` (`-t`, `-c` with absolute config paths) and PQ-Proof's own `tls_probe` (fixed subcommands, loopback addresses and absolute paths only). A plan may also run, by name and with `-flag=value` arguments only, a program it builds itself with `go build -o=out/NAME` (the server it is about to prove; a name like `sh` or `curl` is refused), and it lists the loopback addresses (`127.0.0.1:PORT`) to probe inside the prove microVM. Every other program is refused, and so is any argument outside those shapes, such as `go build -toolexec`, `make --eval` or `nginx -g`. That limits what the model can ask for. It does not make the repository's own code safe: `make test` runs the repo's Makefile recipes with `/bin/sh` and `go test` runs its test code. That code is untrusted and runs only inside a microVM with egress denied, which is the real boundary (see Containment). The plan has no field for egress hosts because sandboxes get none. The allowlist does not read file contents: a change like `InsecureSkipVerify: true` inside an approved file is caught by a deterministic TLS-weakening check on the diff (*planned*).
 
 ## Patch loop
 
@@ -54,13 +54,44 @@ Egress is denied for every step, the build included. DNS goes only to a resolver
 
 Integration tests (`tests/test_sandbox.py`, `tests/test_egress.py`) run real microVMs whenever `msb` is installed; set `PQPROOF_MSB_TESTS=0` to skip them and `PQPROOF_WALL_S=120` to check the full wall clock. They pin `alpine` by the digest of the copy in the local cache, so they use the network only when that cache is empty. So far they have run on macOS (Apple Silicon) with msb 0.7.13; they still have to be run on the Vultr VX1 host.
 
+## End-to-end run on orders-edge
+
+`e2e/orders_edge.py` runs the whole pipeline on orders-edge (a separate fixture repository, not public yet), a small nginx + Go fixture with a classical-only TLS key exchange, a planted test hook and a prompt-injection line (`pqproof/pipeline.py` does the work):
+
+1. Snapshot with `git clone --no-recurse-submodules` (the only non-`msb` commands on the host are `git clone` and `git rev-parse`), and the CBOM.
+2. The plan's image tags are resolved to `name:tag@sha256:<digest>` and shown for approval.
+3. Build: a microVM from the Dockerfile's build image runs `make test` and `go build` offline (vendored modules, `GOPROXY=off`); the binary comes out as one regular file. Prove: a microVM from the Dockerfile's runtime image runs `nginx -t`, starts the API and nginx as background jobs, passes the probe's positive control and probes both TLS ports. The Dockerfile itself is never built.
+4. Baseline first, then the patch loop.
+
+**The model is scripted in this run.** No Vultr Serverless Inference key was available yet, so `e2e/orders-edge-scripted-model.json` stands in for it: a plan and two attempts of fixed edits written by hand, and no inference call is made. Attempt 1 changes the nginx group list, the Go `CurvePreferences` and the `go` line but keeps the OpenSSL 3.0 runtime image on purpose; attempt 2 also moves the runtime image to `nginx:1.30-trixie`. The run shows containment, the build, the raw-error feedback and the proof, not model quality.
+
+Measured on an M-series Mac with msb 0.7.13 (November 4, 2026), 75 s in all:
+
+| | `127.0.0.1:8443` (nginx) | `127.0.0.1:9443` (Go API) |
+|---|---|---|
+| Baseline, hybrid-only client | `remote error: tls: handshake failure` | `remote error: tls: handshake failure` |
+| Baseline, classical client | P-256 | P-256 |
+| Attempt 1 | `nginx -t` fails: `group 'X25519MLKEM768' cannot be set` (OpenSSL 3.0); this raw error is the feedback | |
+| Attempt 2, hybrid-only client | `X25519MLKEM768` | `X25519MLKEM768` |
+| Attempt 2, classical client | X25519 | X25519 |
+
+Every `make`, `go` and `nginx` command ran inside `msb exec` (0 on the host), the planted test hook's `CANARY-0001` landed in the sinkhole during `make test`, every microVM was removed, and the CBOM after the patch has no row that blocks hybrid key exchange (the RS256 JWT row stays: signatures are out of scope). The same probe binary built twice gave the same SHA-256.
+
+```sh
+python3 e2e/orders_edge.py --repo ../orders-edge --approve   # exit code 0 only if every check passes
+```
+
 ## Development
 
 ```sh
 python3 -m unittest discover -s tests -v
 ```
 
-Unit tests need no network and no API key. If `msb` is installed, this command also runs the integration tests (real microVMs, and `msb pull alpine` when the image is not cached yet); `PQPROOF_MSB_TESTS=0 python3 -m unittest discover -s tests -v` runs the unit tests alone.
+Unit tests need no network and no API key. `PQPROOF_E2E_REPO=../orders-edge` also runs the end-to-end test. If `msb` is installed, this command also runs the integration tests (real microVMs, and `msb pull alpine` when the image is not cached yet); `PQPROOF_MSB_TESTS=0 python3 -m unittest discover -s tests -v` runs the unit tests alone.
+
+## Development note
+
+Coding started 20 to 40 minutes before the official kickoff (16:00 UTC on November 3, after the start was moved back an hour), and the first commit came after it. The event page invites participants to "get a head start on your project" before the kickoff.
 
 ## License
 

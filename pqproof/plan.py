@@ -27,6 +27,8 @@ PLAN_SCHEMA = {
         "commands": {"type": "array", "items": {
             "type": "array", "minItems": 1, "items": {"type": "string"}}},
         "images": {"type": "array", "items": {"type": "string"}},
+        # Optional: loopback addresses of the servers to probe inside the prove microVM.
+        "targets": {"type": "array", "items": {"type": "string"}},
     },
 }
 
@@ -51,6 +53,13 @@ PROGRAMS = {
                   rf"-(?:groups|hosts)=[A-Za-z0-9_.,-]+|-(?:ca|cert|key)={ABS_PATH}|-servername=[A-Za-z0-9.-]+"
                   rf"|-addr={LOOPBACK}|-wait=[0-9]{{1,3}}s|{LOOPBACK}|{ABS_PATH}"),
 }
+# A plan may also run, by name, a program it builds itself with `go build -o=out/NAME` (the
+# server it is about to prove), with flag-style arguments only. It runs inside the microVM.
+BUILT_ARG = r"-[a-z][a-z0-9-]*=[A-Za-z0-9_.,:/-]+"
+# A built program named like a system tool would read to the approver as that tool.
+RESERVED_NAMES = frozenset({"sh", "bash", "dash", "zsh", "env", "busybox", "sudo", "su", "python", "python3",
+                            "perl", "ruby", "node", "curl", "wget", "nc", "ncat", "socat", "ssh", "scp", "git",
+                            "docker", "msb", "openssl"})
 PATH_CHARS = re.compile(r"[A-Za-z0-9._/-]+")
 # Base images: Docker Hub official images pinned by digest, `name[:tag]@sha256:<64 hex>`. A tag
 # alone is not a pin (the registry owner can move it); it may stay next to the digest for the
@@ -82,12 +91,31 @@ def clean_path(path):
     return norm
 
 
-def check_command(argv):
+def built_programs(commands):
+    """Names of the programs a plan builds: the last segment of each `go build -o=PATH`."""
+    names = set()
+    for argv in commands:
+        if isinstance(argv, list) and argv[:2] == ["go", "build"]:
+            for arg in argv[2:]:
+                if isinstance(arg, str) and arg.startswith("-o="):
+                    name = arg[3:].rsplit("/", 1)[-1]
+                    if name in PROGRAMS or name in RESERVED_NAMES or not re.fullmatch(TARGET, name):
+                        raise PlanError(f"go build output must not shadow an allowed program: {arg!r}")
+                    names.add(name)
+    return frozenset(names)
+
+
+def check_command(argv, built=frozenset()):
     if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv):
         raise PlanError(f"command must be a non-empty list of non-empty strings: {argv!r}")
     prog = argv[0]
     if "/" in prog:
         raise PlanError(f"command must name a program, not a path: {prog!r}")
+    if prog in built:
+        for arg in argv[1:]:
+            if not re.fullmatch(BUILT_ARG, arg):
+                raise PlanError(f"argument not allowed for the built program {prog}: {arg!r}")
+        return tuple(argv)
     if prog not in PROGRAMS:
         raise PlanError(f"program not allowed in a sandbox step: {prog!r} (allowed: {', '.join(PROGRAMS)})")
     first, rest = PROGRAMS[prog]
@@ -116,6 +144,7 @@ class Allowlist:
     commands: frozenset
     paths: frozenset
     images: frozenset
+    targets: frozenset = frozenset()
 
     def allows_command(self, argv):
         return tuple(argv) in self.commands
@@ -132,11 +161,11 @@ class Allowlist:
     def union(self, other):
         """Both allowlists together: for adding the control plane's own fixed commands (the probe)."""
         return Allowlist(commands=self.commands | other.commands, paths=self.paths | other.paths,
-                         images=self.images | other.images)
+                         images=self.images | other.images, targets=self.targets | other.targets)
 
     def to_json(self):
         return {"commands": sorted(list(c) for c in self.commands),
-                "paths": sorted(self.paths), "images": sorted(self.images)}
+                "paths": sorted(self.paths), "images": sorted(self.images), "targets": sorted(self.targets)}
 
 
 def compile_allowlist(plan):
@@ -151,14 +180,19 @@ def compile_allowlist(plan):
         raise PlanError(f"missing plan fields {sorted(missing)}")
     if type(plan["version"]) is not int or plan["version"] != 1:  # rejects true, 1.0, "1"
         raise PlanError(f"unsupported plan version {plan['version']!r}")
-    for key in ("edits", "commands", "images"):
-        if not isinstance(plan[key], list):
+    for key in ("edits", "commands", "images", "targets"):
+        if not isinstance(plan.get(key, []), list):
             raise PlanError(f"{key} must be a list")
     paths = set()
     for edit in plan["edits"]:
         if not isinstance(edit, dict) or set(edit) != {"path", "why"}:
             raise PlanError(f"edit must have exactly 'path' and 'why': {edit!r}")
         paths.add(clean_path(edit["path"]))
-    return Allowlist(commands=frozenset(check_command(c) for c in plan["commands"]),
+    for target in plan.get("targets", []):
+        if not isinstance(target, str) or not re.fullmatch(LOOPBACK, target):
+            raise PlanError(f"target must be a loopback address inside the microVM, 127.0.0.1:PORT: {target!r}")
+    built = built_programs(plan["commands"])
+    return Allowlist(commands=frozenset(check_command(c, built) for c in plan["commands"]),
                      paths=frozenset(paths),
-                     images=frozenset(check_image(i) for i in plan["images"]))
+                     images=frozenset(check_image(i) for i in plan["images"]),
+                     targets=frozenset(plan.get("targets", [])))

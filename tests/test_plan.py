@@ -81,13 +81,33 @@ class Compile(unittest.TestCase):
                 self.assertTrue(compile_allowlist(plan_with(images=[ref])).allows_image(ref))
 
     def test_no_egress_field_anywhere(self):
-        self.assertEqual(set(self.allow.to_json()), {"commands", "paths", "images"})
+        # targets are loopback addresses inside the prove microVM, not egress destinations
+        self.assertEqual(set(self.allow.to_json()), {"commands", "paths", "images", "targets"})
         self.assertNotIn("egress", str(PLAN_SCHEMA).lower())
         self.assertFalse(PLAN_SCHEMA["additionalProperties"])
 
     def test_schema_and_compiler_agree_on_fields(self):
-        self.assertEqual(set(PLAN_SCHEMA["required"]), set(PLAN_SCHEMA["properties"]))
-        self.assertEqual(set(PLAN_SCHEMA["properties"]), set(PLAN))
+        self.assertEqual(set(PLAN_SCHEMA["properties"]) - set(PLAN_SCHEMA["required"]), {"targets"})
+        self.assertEqual(set(PLAN_SCHEMA["required"]), set(PLAN))
+
+    def test_targets_are_loopback_only(self):
+        ok = compile_allowlist(plan_with(targets=["127.0.0.1:8443", "127.0.0.1:9443"]))
+        self.assertEqual(ok.targets, frozenset({"127.0.0.1:8443", "127.0.0.1:9443"}))
+        for bad in (["203.0.113.7:80"], ["0.0.0.0:8443"], ["localhost:8443"], ["127.0.0.1:8443/x"], [8443], "127.0.0.1:1"):
+            with self.subTest(bad=bad), self.assertRaises(PlanError):
+                compile_allowlist(plan_with(targets=bad))
+
+    def test_a_plan_may_run_what_it_builds(self):
+        cmds = [["go", "build", "-trimpath", "-o=out/api", "./cmd/api"], ["api"], ["api", "-addr=127.0.0.1:9443"]]
+        allow = compile_allowlist(plan_with(commands=cmds))
+        self.assertTrue(allow.allows_command(["api"]))
+        for bad in ([["api"]],                                                   # not built by this plan
+                    [["go", "build", "-o=out/api", "."], ["api", "--exec", "sh"]],  # not a -flag=value argument
+                    [["go", "build", "-o=out/api", "."], ["api", "-x=a b"]],
+                    [["go", "build", "-o=bin/make", "."], ["make", "anything"]],  # shadows an allowed program
+                    [["go", "build", "-o=bin/sh", "."], ["sh"]]):
+            with self.subTest(bad=bad), self.assertRaises(PlanError):
+                compile_allowlist(plan_with(commands=bad))
 
 
 class Reject(unittest.TestCase):
