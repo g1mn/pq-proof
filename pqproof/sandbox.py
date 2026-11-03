@@ -13,6 +13,7 @@ import datetime
 import json
 import os
 import re
+import secrets
 import subprocess
 import threading
 import time
@@ -84,7 +85,9 @@ class Runner:
         if not allow.allows_command(argv):
             raise SandboxError(f"command is not in the approved allowlist: {list(argv)!r}")
         started = self._clock()
-        name = f"pq-{int(started)}-{job}-{step}"
+        # A random suffix keeps two runs of the same step in the same second apart, so the
+        # `rm --force` below can only ever remove this step's own sandbox.
+        name = f"pq-{int(started)}-{job}-{step}-{secrets.token_hex(4)}"
         res = StepResult(name=name, image=image, argv=list(argv), limits=limits, started_at=started)
         try:
             r = self._msb(res.host_commands, "create", "-q", "--name", name,

@@ -11,6 +11,7 @@ import pathlib
 import signal
 import subprocess
 import sys
+import threading
 import time
 import unittest
 
@@ -74,7 +75,8 @@ class RunStep(unittest.TestCase):
         go = f"golang:1.25-bookworm@sha256:{'1' * 64}"
         res = self.step(msb, go, ["make", "test"], job="job1", step="build")
         create, exec_, rm = res.host_commands
-        self.assertEqual(create, ["msb", "create", "-q", "--name", f"pq-{int(T0)}-job1-build", "--cpus", "1",
+        self.assertRegex(res.name, rf"^pq-{int(T0)}-job1-build-[0-9a-f]{{8}}$")
+        self.assertEqual(create, ["msb", "create", "-q", "--name", res.name, "--cpus", "1",
                                   "--memory", "1024M", "--max-duration", "120s", "--label", LABEL,
                                   "--pull", "never", "--no-net", "--", go])
         self.assertEqual(exec_, ["msb", "exec", "--no-stdin", res.name, "--", "make", "test"])
@@ -126,6 +128,14 @@ class RunStep(unittest.TestCase):
         for bad in ("Job", "a b", "a/b", "", "x" * 50):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 self.step(FakeMsb(self.clock), job=bad)
+
+    def test_same_step_in_the_same_second_gets_its_own_sandbox(self):
+        # A retry loop or two requests: the second step's cleanup must not remove the first's VM.
+        msb = FakeMsb(self.clock)
+        names = {self.step(msb).name for _ in range(20)}
+        self.assertEqual(len(names), 20)
+        removed = [a[-1] for a, _ in msb.calls if a[1] == "rm"]
+        self.assertEqual(sorted(removed), sorted(names))
 
     def test_runs_only_what_the_allowlist_holds(self):
         approved = allow(IMG, ["make", "test"])
@@ -199,6 +209,24 @@ class RealMsb(unittest.TestCase):
         res = self.step("limits", ["nproc"], Limits(cpus=1, memory_mib=256))
         self.assertEqual((res.exit_code, res.stdout.strip()), (0, "1"))
 
+    def test_same_name_step_does_not_destroy_a_running_step(self):
+        fixed = time.time()
+        runner, out = Runner(clock=lambda: fixed), {}
+        slow, fast = ["sh", "-c", "sleep 6; echo DONE"], ["true"]
+        approved = allow(self.IMAGE, slow, fast)
+        first = threading.Thread(target=lambda: out.setdefault("first", runner.run_step(
+            approved, "itest", "dup", self.IMAGE, slow, Limits(memory_mib=256, wall_clock_s=30))))
+        first.start()
+        for _ in range(100):
+            if any(n.startswith(f"pq-{int(fixed)}-itest-dup-") for n in self.names()):
+                break
+            time.sleep(0.1)
+        second = runner.run_step(approved, "itest", "dup", self.IMAGE, fast, Limits(memory_mib=256, wall_clock_s=30))
+        first.join(timeout=60)
+        self.assertEqual(second.exit_code, 0)
+        self.assertIn("DONE", out["first"].stdout, out["first"].stderr)
+        self.assertNotEqual(out["first"].name, second.name)
+
     def test_reaper_removes_what_a_killed_control_plane_left(self):
         code = ("import sys; from helpers import allow; from pqproof.sandbox import Runner, Limits; "
                 "img, argv = sys.argv[1], ['sleep', '600']; "
@@ -209,7 +237,7 @@ class RealMsb(unittest.TestCase):
         try:
             orphan = None
             for _ in range(120):
-                orphan = next((n for n in self.names() if n.endswith("-itest-orphan")), None)
+                orphan = next((n for n in self.names() if "-itest-orphan-" in n), None)
                 if orphan:
                     break
                 time.sleep(0.25)
