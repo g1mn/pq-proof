@@ -70,6 +70,14 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(s.host_commands[-1], ["msb", "rm", "--force", "-q", n])
         self.assertIsNotNone(s.destroyed_at)
 
+    def test_a_background_job_s_output(self):
+        # review day 2 (S1): when a server cannot bind its port, its own error goes back to the model
+        msb = FakeMsb()
+        with Runner(msb="msb", run=msb).session(self.allow, "job1", "prove", IMG) as s:
+            job = s.start(["make", "test"])
+            self.assertEqual(s.logs(job, tail=50), "")  # FakeMsb prints nothing for logs
+        self.assertIn(["msb", "logs", "--job", "job_1", "--tail", "50", s.name], s.host_commands)
+
     def test_run_as_a_guest_user(self):
         msb = FakeMsb()
         with Runner(msb="msb", run=msb).session(self.allow, "job1", "prove", IMG) as s:

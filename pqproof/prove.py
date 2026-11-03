@@ -13,6 +13,8 @@ probe's output, never from a model.
 The probe and its reference servers run as root and the probe binary is root-owned; the repo's
 servers run as unprivileged users (pipeline.py), so they cannot replace it. The binary is also
 copied back out and hashed on the host before the controls and after the last handshake.
+`tls_probe listeners` (run as root) reads from /proc which process holds each listening port, so
+the pipeline can check that the server named for a port is the one that answers on it.
 
 parse() also reads `openssl s_client` output, so an OpenSSL 3.5+ client can cross-check:
 - hybrid: "Negotiated TLS1.3 group: X25519MLKEM768"
@@ -31,7 +33,7 @@ from .plan import PROBE_ADDRS, Allowlist
 from .sandbox import Limits
 
 PROBE_NAME = "tls_probe"
-PROBE_VERSION = "0.2.0"
+PROBE_VERSION = "0.3.0"
 PROBE_SRC = pathlib.Path(__file__).resolve().parent.parent / "probe"
 GUEST_PROBE = "/usr/local/bin/tls_probe"
 GUEST_SRC = "/work/probe"
@@ -151,9 +153,37 @@ def serve_argv(addr, groups, tls_dir):
 REFERENCES = ((CONTROL_ADDR, f"{OFFER_HYBRID},X25519"), (NEGATIVE_ADDR, NEGATIVE_GROUPS))
 
 
+def port(addr):
+    return int(addr.rsplit(":", 1)[1])
+
+
+def listeners_argv(addrs):
+    """tls_probe listeners for the reference servers' ports and the targets' ports."""
+    ports = sorted({port(a) for a in addrs} | {port(a) for a, _ in REFERENCES})
+    return [PROBE_NAME, "listeners", "-ports=" + ",".join(map(str, ports)), "-wait=10s"]
+
+
+LISTEN_LINE = re.compile(r"listen: (?P<addr>\S+):(?P<port>[0-9]+) uid=(?P<uid>[0-9]+) inode=(?P<inode>[0-9]+) "
+                         r"pid=(?P<pid>[0-9]+) exe=(?P<exe>\S+)")
+
+
+def listeners(session, addrs):
+    """(Exec, [line dict]) from tls_probe listeners, run as root: every process that holds a
+    listening socket on one of the ports. Lines it cannot parse are dropped (they cannot vouch
+    for a server); the raw output stays in the Exec."""
+    r = session.exec(listeners_argv(addrs))
+    out = []
+    for line in str(r.stdout).splitlines():
+        m = LISTEN_LINE.fullmatch(line)
+        if m:
+            out.append(dict(m.groupdict(), port=int(m["port"]), line=line))
+    return r, out
+
+
 def probe_allowlist(targets, tls_dir, servername="localhost", hosts="localhost,127.0.0.1"):
-    """The control plane's fixed probe commands for one prove microVM."""
-    cmds = {(PROBE_NAME, "version"), (PROBE_NAME, "cert", f"-hosts={hosts}", tls_dir)}
+    """The control plane's fixed probe commands for one prove microVM (targets: addresses)."""
+    cmds = {(PROBE_NAME, "version"), (PROBE_NAME, "cert", f"-hosts={hosts}", tls_dir),
+            tuple(listeners_argv(targets))}
     cmds |= {tuple(serve_argv(addr, groups, tls_dir)) for addr, groups in REFERENCES}
     cmds.add(tuple(connect_argv(CONTROL_ADDR, OFFER_HYBRID, tls_dir)))
     for groups in (OFFER_HYBRID, OFFER_CLASSICAL):

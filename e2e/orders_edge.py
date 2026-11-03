@@ -41,8 +41,9 @@ from pqproof.sandbox import LABEL, MSB, Runner, run_cmd  # noqa: E402
 from pqproof.scan import scan  # noqa: E402
 
 MODEL_FILE = ROOT / "e2e" / "orders-edge-scripted-model.json"
-# orders-edge serves TLS on two ports: nginx (the edge) and the Go API behind it. Both must be probed.
-EXPECTED_TARGETS = ["127.0.0.1:8443", "127.0.0.1:9443"]
+# orders-edge serves TLS on two ports: nginx (the edge) and the Go API behind it. Both must be probed,
+# each must be answered by its own server.
+EXPECTED_TARGETS = [("127.0.0.1:8443", "nginx"), ("127.0.0.1:9443", "api")]
 # Tags PQ-Proof already pins by index digest: resolve through the pin, so a moved tag cannot change a run.
 KNOWN = {f"{i.name}:{i.tag}": i.ref for i in (GOLANG, NGINX_BOOKWORM, NGINX_TRIXIE)}
 
@@ -118,7 +119,7 @@ def main():
         for c in plan["commands"]:
             print(f"  run   {' '.join(c)}")
         for t in plan["targets"]:
-            print(f"  probe {t}")
+            print(f"  probe {t['addr']} (must be served by {t['server']})")
         if not args.approve and input("Approve this plan? [y/N] ").strip().lower() != "y":
             print("not approved")
             return 2
@@ -132,7 +133,7 @@ def main():
 
         layout = tls_layout(snap)
         pipe = Pipeline(runner, allow, probe, layout, pins, "e2e", scratch, sink)
-        targets = sorted(allow.targets)
+        targets = [a for a, _ in sorted(allow.targets)]
 
         base_dir = os.path.join(scratch, "baseline")
         shutil.copytree(snap, base_dir, symlinks=True)
@@ -160,7 +161,7 @@ def main():
     left = json.loads(run_cmd([MSB, "ls", "--label", LABEL, "--format", "json"], timeout=60).stdout or "[]")
     canaries = sorted({c for s in sessions for c in s["egress"]["canaries"]})
     checks = {
-        "targets_are_orders_edge_ports": targets == EXPECTED_TARGETS,
+        "targets_are_orders_edge_ports": sorted(allow.targets) == EXPECTED_TARGETS,
         "baseline_hybrid_fails_classical_connects": baseline_ok(base, targets),
         "patched_negotiates_X25519MLKEM768_classical_connects": final_ok(final, targets),
         "attempts_at_most_3": 1 <= len(report["attempts"]) <= 3,

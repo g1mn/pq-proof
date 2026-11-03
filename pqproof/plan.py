@@ -27,9 +27,12 @@ PLAN_SCHEMA = {
         "commands": {"type": "array", "items": {
             "type": "array", "minItems": 1, "items": {"type": "string"}}},
         "images": {"type": "array", "items": {"type": "string"}},
-        # Loopback addresses of the servers to probe inside the prove microVM. At least one: a proof
-        # that probes nothing proves nothing.
-        "targets": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        # The servers to probe inside the prove microVM: a loopback address and the server that must
+        # own its port ("nginx" or a program the plan builds). At least one: a proof that probes
+        # nothing proves nothing.
+        "targets": {"type": "array", "minItems": 1, "items": {
+            "type": "object", "additionalProperties": False, "required": ["addr", "server"],
+            "properties": {"addr": {"type": "string"}, "server": {"type": "string"}}}},
     },
 }
 
@@ -52,8 +55,8 @@ PROGRAMS = {
     "go": ("build|test|vet", rf"{GO_PACKAGE}|-v|-count=1|-mod=vendor|-trimpath|-o={REL_OUT}"),
     "nginx": (None, rf"-t|-q|-c|-p|{ABS_PATH}"),
     # PQ-Proof's own fixed-version TLS client and reference server (prove.py), not repo code.
-    "tls_probe": ("version|cert|serve|connect",
-                  rf"-(?:groups|hosts)=[A-Za-z0-9_.,-]+|-(?:ca|cert|key)={ABS_PATH}|-servername=[A-Za-z0-9.-]+"
+    "tls_probe": ("version|cert|serve|connect|listeners",
+                  rf"-(?:groups|hosts)=[A-Za-z0-9_.,-]+|-(?:ca|cert|key)={ABS_PATH}|-servername=[A-Za-z0-9.-]+|-ports=[0-9,]+"
                   rf"|-addr={LOOPBACK}|-wait=[0-9]{{1,3}}s|{LOOPBACK}|{ABS_PATH}"),
 }
 # A plan may also run, by name, a program it builds itself with `go build -o=out/NAME` (the
@@ -133,13 +136,29 @@ def check_command(argv, built=frozenset()):
     return tuple(argv)
 
 
-def check_target(target):
+def check_addr(addr):
     """A server address inside the prove microVM: 127.0.0.1:PORT with PORT 1-65535, not the probe's own."""
-    if not isinstance(target, str) or not re.fullmatch(LOOPBACK, target) or int(target.rsplit(":", 1)[1]) > 65535:
-        raise PlanError(f"target must be a loopback address inside the microVM, 127.0.0.1:PORT (1-65535): {target!r}")
-    if target in PROBE_ADDRS:
-        raise PlanError(f"target {target} is the probe's own reference server, not a server of the repo")
-    return target
+    if not isinstance(addr, str) or not re.fullmatch(LOOPBACK, addr) or int(addr.rsplit(":", 1)[1]) > 65535:
+        raise PlanError(f"target must be a loopback address inside the microVM, 127.0.0.1:PORT (1-65535): {addr!r}")
+    if addr in PROBE_ADDRS:
+        raise PlanError(f"target {addr} is the probe's own reference server, not a server of the repo")
+    return addr
+
+
+# Servers the prove step starts itself and may name as the owner of a target port, besides the
+# programs the plan builds.
+SERVERS = frozenset({"nginx"})
+
+
+def check_target(target, built=frozenset()):
+    """(addr, server): the address to probe and the server that must own its port in the microVM."""
+    if not isinstance(target, dict) or set(target) != {"addr", "server"}:
+        raise PlanError(f"target must have exactly 'addr' and 'server' (which server owns the port): {target!r}")
+    server = target["server"]
+    if not isinstance(server, str) or server not in SERVERS | built:
+        raise PlanError(f"target server must be nginx or a program this plan builds ({', '.join(sorted(built)) or 'none'}): "
+                        f"{server!r}")
+    return check_addr(target["addr"]), server
 
 
 def check_image(ref):
@@ -156,7 +175,11 @@ class Allowlist:
     commands: frozenset
     paths: frozenset
     images: frozenset
-    targets: frozenset = frozenset()
+    targets: frozenset = frozenset()  # (addr, server) pairs
+
+    @property
+    def addrs(self):
+        return frozenset(a for a, _ in self.targets)
 
     def allows_command(self, argv):
         return tuple(argv) in self.commands
@@ -177,7 +200,8 @@ class Allowlist:
 
     def to_json(self):
         return {"commands": sorted(list(c) for c in self.commands),
-                "paths": sorted(self.paths), "images": sorted(self.images), "targets": sorted(self.targets)}
+                "paths": sorted(self.paths), "images": sorted(self.images),
+                "targets": [{"addr": a, "server": n} for a, n in sorted(self.targets)]}
 
 
 def compile_allowlist(plan):
@@ -200,12 +224,12 @@ def compile_allowlist(plan):
         if not isinstance(edit, dict) or set(edit) != {"path", "why"}:
             raise PlanError(f"edit must have exactly 'path' and 'why': {edit!r}")
         paths.add(clean_path(edit["path"]))
-    targets = [check_target(t) for t in plan["targets"]]
+    built = built_programs(plan["commands"])
+    targets = [check_target(t, built) for t in plan["targets"]]
     if not targets:
         raise PlanError("targets is empty: name at least one server address to probe")
-    if len(set(targets)) != len(targets):
+    if len({a for a, _ in targets}) != len(targets):
         raise PlanError(f"targets repeat an address: {targets}")
-    built = built_programs(plan["commands"])
     return Allowlist(commands=frozenset(check_command(c, built) for c in plan["commands"]),
                      paths=frozenset(paths),
                      images=frozenset(check_image(i) for i in plan["images"]),

@@ -12,6 +12,10 @@ Nothing from the repo runs on the host. The repo's Dockerfile is read, never bui
   cannot replace the probe, which stays root-owned; the probe binary is copied back out and
   hashed before the controls and after the last handshake. The control plane, as root, only
   creates nginx's pid file and cache directory for NGINX_USER beforehand.
+  Each target names the server that must own its port; before any handshake, `tls_probe
+  listeners` shows which process (uid and executable) holds each port, and the same listing is
+  taken again after the last handshake. A server answering on another server's port is a failed
+  attempt, and the servers' own output goes back with it.
 Each step's raw output is what goes back to the model when it fails.
 """
 import hashlib
@@ -35,6 +39,10 @@ RAW_TAIL = 6000
 NGINX_USER = "65534:65534"
 BUILT_USER = "65533:65533"
 NGINX_CACHE = "/var/cache/nginx"  # temp paths of the official nginx images
+NGINX_EXE = "/usr/sbin/nginx"  # the official nginx images' binary (Debian and Alpine variants)
+BIN_DIR = "/usr/local/bin"  # where the prove microVM gets the programs the plan built
+JOB_LOG_LINES = 50
+JOB_ID = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 GUEST_ABS = re.compile(r"(?:/(?!\.\.?(?:/|$))[A-Za-z0-9_.-]+)+")
 
 
@@ -137,6 +145,31 @@ def _raw(e):
     return f"$ {' '.join(e.argv)}\n(exit {e.exit_code}{', timed out' if e.timed_out else ''})\n{out}"
 
 
+def owner_problems(lines, targets):
+    """(problems with the probe's reference ports, problems with the targets' ports): a port must be
+    held, by at least one process, and only by the server named for it (uid and executable).
+    lines come from prove.listeners; targets are (addr, server) pairs."""
+    want = {prove.port(a): (a, "tls_probe", "0", prove.GUEST_PROBE, "ref") for a, _ in prove.REFERENCES}
+    for addr, server in targets:
+        user, exe = (NGINX_USER, NGINX_EXE) if server == "nginx" else (BUILT_USER, f"{BIN_DIR}/{server}")
+        want[prove.port(addr)] = (addr, server, user.split(":")[0], exe, "target")
+    out = {"ref": [], "target": []}
+    for port, (addr, server, uid, exe, kind) in sorted(want.items()):
+        held = [ln["line"] for ln in lines if ln["port"] == port]
+        if not held or any(ln["uid"] != uid or ln["exe"] != exe for ln in lines if ln["port"] == port):
+            out[kind].append(f"{addr} must be served by {server} (uid {uid}, {exe}); listening on port {port}:\n  "
+                             + ("\n  ".join(held) or "nothing"))
+    return out["ref"], out["target"]
+
+
+def _job_logs(s, jobs):
+    out = []
+    for argv, job in jobs:
+        log = s.logs(job, tail=JOB_LOG_LINES) if JOB_ID.fullmatch(str(job)) else "(no job id)"
+        out.append(f"$ {' '.join(argv)} (background job, last {JOB_LOG_LINES} lines)\n{str(log)[-RAW_TAIL // 2:]}")
+    return "\n".join(out)
+
+
 class Pipeline:
     def __init__(self, runner, allow, probe, layout, pins, job, scratch, sinkhole=None):
         self.runner, self.allow, self.probe, self.layout = runner, allow, probe, layout
@@ -179,15 +212,17 @@ class Pipeline:
 
         # prove: runtime image, probe, reference servers, the repo's servers, both controls, every target
         lay = self.layout
-        allow = self.allow.union(prove.probe_allowlist(sorted(self.allow.targets), lay.tls_dir, lay.servername, lay.hosts))
+        targets = sorted(self.allow.targets)
+        addrs = [a for a, _ in targets]
+        allow = self.allow.union(prove.probe_allowlist(addrs, lay.tls_dir, lay.servername, lay.hosts))
         allow = allow.union(Allowlist(commands=frozenset(nginx_prep(lay)), paths=frozenset(), images=frozenset()))
         conf = f"{SRC}/{lay.nginx_conf}"
-        verdict = {"positive_control": None, "negative_control": None, "targets": {}}
-        invalid = None
+        verdict = {"positive_control": None, "negative_control": None, "listeners": None, "targets": {}}
+        invalid = wrong_owner = None
         with self.runner.session(allow, self.job, f"prove-{tag}", run_img, PROVE_LIMITS) as s:
             s.copy_in(workdir, SRC)
             for path in binaries:
-                s.copy_in(path, f"/usr/local/bin/{os.path.basename(path)}")
+                s.copy_in(path, f"{BIN_DIR}/{os.path.basename(path)}")
             verdict["probe"] = prove.install_probe(s, self.probe, lay.tls_dir, lay.hosts)
             for argv in nginx_prep(lay):
                 e = s.exec(list(argv))
@@ -198,18 +233,27 @@ class Pipeline:
                 failed = e
             else:
                 prove.start_references(s, lay.tls_dir)  # before any repo server can take their ports
+                jobs = []
                 for path in binaries:  # the plan says whether to run what it built
                     if self.allow.allows_command([os.path.basename(path)]):
-                        s.start([os.path.basename(path)], user=BUILT_USER)
-                s.start(["nginx", "-c", conf], user=NGINX_USER)
+                        argv = [os.path.basename(path)]
+                        jobs.append((argv, s.start(argv, user=BUILT_USER)))
+                jobs.append((["nginx", "-c", conf], s.start(["nginx", "-c", conf], user=NGINX_USER)))
                 invalid = prove.verify_probe(s, self.probe, os.path.join(out_dir, "probe-before"))
-                if not invalid:
+                if not invalid:  # who holds each port, before any handshake
+                    _, before = prove.listeners(s, addrs)
+                    verdict["listeners"] = [ln["line"] for ln in before]
+                    ref, tgt = owner_problems(before, targets)
+                    invalid = "\n".join(ref) or None
+                    if tgt and not invalid:
+                        wrong_owner = "\n".join(tgt) + "\n" + _job_logs(s, jobs)
+                if not invalid and not wrong_owner:
                     ctl = prove.controls(s, lay.tls_dir)
                     verdict["positive_control"] = _hs(ctl["positive"][0])
                     verdict["negative_control"] = {"hybrid": _hs(ctl["negative_hybrid"][0]),
                                                    "classical": _hs(ctl["negative_classical"][0])}
                     invalid = prove.control_problem(ctl)
-                for target in [] if invalid else sorted(self.allow.targets):
+                for target in [] if invalid or wrong_owner else addrs:
                     res = prove.probe_target(s, target, lay.tls_dir, lay.servername)
                     verdict["targets"][target] = {k: {"kind": h.kind, "group": h.group, "error": h.error,
                                                       "exit_code": ex.exit_code} for k, (h, ex) in res.items()}
@@ -217,12 +261,19 @@ class Pipeline:
                         failed = res["hybrid"][1]
                     elif failed is None and not res["classical"][0].ok:
                         failed = res["classical"][1]
+                if not invalid and not wrong_owner:
+                    _, after = prove.listeners(s, addrs)
+                    if [ln["line"] for ln in after] != verdict["listeners"]:
+                        invalid = ("listening sockets changed during the proof:\nbefore:\n  " + "\n  ".join(verdict["listeners"])
+                                   + "\nafter:\n  " + "\n  ".join(ln["line"] for ln in after))
                 if not invalid:
                     invalid = prove.verify_probe(s, self.probe, os.path.join(out_dir, "probe-after"))
         detail["prove"] = _session_record(s, self.sinkhole)
         detail["verdict"] = verdict
         if invalid:
             return BuildResult(ok=False, raw_error=f"proof invalid, no server was judged: {invalid}", detail=detail)
+        if wrong_owner:
+            return BuildResult(ok=False, raw_error=f"port check failed, no server was judged:\n{wrong_owner}", detail=detail)
         if failed:
             return BuildResult(ok=False, raw_error=_raw(failed), detail=detail)
         return BuildResult(ok=True, detail=detail)

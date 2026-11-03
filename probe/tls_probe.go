@@ -8,9 +8,17 @@
 //	tls_probe cert -hosts=localhost,127.0.0.1 DIR      writes DIR/ca.pem, DIR/cert.pem, DIR/key.pem (mode 0644)
 //	tls_probe serve -addr=127.0.0.1:4433 -groups=X25519MLKEM768,X25519 -cert=PATH -key=PATH
 //	tls_probe connect -groups=X25519MLKEM768 -ca=PATH -servername=NAME [-wait=10s] HOST:PORT
+//	tls_probe listeners -ports=8443,9443 [-wait=10s]
 //
 // connect prints "key: value" lines (probe, target, offered, result, protocol, group, error) and
 // exits 0 when the handshake completes, 1 when it fails and 2 on a usage error.
+//
+// listeners waits until every given TCP port has a listening socket (or -wait runs out), then
+// prints one line per listening socket and process that holds it, read from /proc:
+// "listen: ADDR:PORT uid=UID inode=INODE pid=PID exe=PATH" (pid=0 exe=? when no process was found;
+// PATH has '?' for any space or non-printable byte),
+// and "missing: PORT" for a port nobody listens on. It exits 0 when no port is missing, else 1.
+// Run it as root, so it can read every process's file descriptors.
 package main
 
 import (
@@ -29,12 +37,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 var groupNames = map[string]tls.CurveID{
 	"X25519MLKEM768":     tls.X25519MLKEM768,
@@ -61,6 +71,8 @@ func main() {
 		err = serve(os.Args[2:])
 	case "connect":
 		os.Exit(connect(os.Args[2:]))
+	case "listeners":
+		os.Exit(listeners(os.Args[2:]))
 	default:
 		usage()
 	}
@@ -71,7 +83,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tls_probe version | cert | serve | connect (see the source)")
+	fmt.Fprintln(os.Stderr, "usage: tls_probe version | cert | serve | connect | listeners (see the source)")
 	os.Exit(2)
 }
 
@@ -243,4 +255,153 @@ func groupName(id tls.CurveID) string {
 		}
 	}
 	return id.String()
+}
+
+type socket struct {
+	addr  string
+	port  int
+	uid   string
+	inode string
+}
+
+// listening reads the listening TCP sockets from /proc/net/tcp and /proc/net/tcp6.
+func listening() []socket {
+	var out []socket
+	for _, file := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n")[1:] {
+			f := strings.Fields(line)
+			if len(f) < 10 || f[3] != "0A" { // 0A: TCP_LISTEN
+				continue
+			}
+			host, port, ok := strings.Cut(f[1], ":")
+			p, err := strconv.ParseUint(port, 16, 16)
+			ip, ipErr := procIP(host)
+			if !ok || err != nil || ipErr != nil {
+				continue
+			}
+			out = append(out, socket{addr: ip.String(), port: int(p), uid: f[7], inode: f[9]})
+		}
+	}
+	return out
+}
+
+// procIP decodes an address from /proc/net/tcp*: 32-bit words in the kernel's (little-endian) order.
+func procIP(h string) (net.IP, error) {
+	if len(h) != 8 && len(h) != 32 {
+		return nil, fmt.Errorf("bad address %q", h)
+	}
+	ip := make(net.IP, len(h)/2)
+	for w := 0; w < len(h)/8; w++ {
+		v, err := strconv.ParseUint(h[w*8:w*8+8], 16, 32)
+		if err != nil {
+			return nil, err
+		}
+		for b := 0; b < 4; b++ {
+			ip[w*4+b] = byte(v >> (8 * b))
+		}
+	}
+	return ip, nil
+}
+
+// holders maps socket inodes to the pids that hold them, from /proc/*/fd.
+func holders() map[string][]int {
+	out := map[string][]int{}
+	procs, _ := os.ReadDir("/proc")
+	for _, p := range procs {
+		pid, err := strconv.Atoi(p.Name())
+		if err != nil {
+			continue
+		}
+		fds, _ := os.ReadDir(filepath.Join("/proc", p.Name(), "fd"))
+		for _, fd := range fds {
+			link, err := os.Readlink(filepath.Join("/proc", p.Name(), "fd", fd.Name()))
+			if err == nil && strings.HasPrefix(link, "socket:[") && strings.HasSuffix(link, "]") {
+				inode := link[len("socket:[") : len(link)-1]
+				out[inode] = append(out[inode], pid)
+			}
+		}
+	}
+	return out
+}
+
+// oneWord replaces anything but printable ASCII other than a space with '?', so a process cannot
+// add or end a line through the name of the file it runs from.
+func oneWord(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r > ' ' && r < 0x7f {
+			return r
+		}
+		return '?'
+	}, s)
+}
+
+func listeners(args []string) int {
+	fs := flag.NewFlagSet("listeners", flag.ContinueOnError)
+	ports := fs.String("ports", "", "comma-separated TCP ports that must be listening")
+	wait := fs.Duration("wait", 10*time.Second, "wait this long for every port to listen")
+	if fs.Parse(args) != nil || fs.NArg() != 0 || *ports == "" {
+		fmt.Fprintln(os.Stderr, "usage: tls_probe listeners -ports=P1,P2 [-wait=10s]")
+		return 2
+	}
+	var want []int
+	for _, s := range strings.Split(*ports, ",") {
+		p, err := strconv.Atoi(s)
+		if err != nil || p < 1 || p > 65535 {
+			fmt.Fprintln(os.Stderr, "tls_probe: bad port", s)
+			return 2
+		}
+		want = append(want, p)
+	}
+	deadline := time.Now().Add(*wait)
+	var socks []socket
+	var missing []int
+	for {
+		socks, missing = listening(), nil
+		for _, p := range want {
+			found := false
+			for _, s := range socks {
+				found = found || s.port == p
+			}
+			if !found {
+				missing = append(missing, p)
+			}
+		}
+		if len(missing) == 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	held := holders()
+	var lines []string
+	for _, s := range socks {
+		pids := held[s.inode]
+		if len(pids) == 0 {
+			pids = []int{0}
+		}
+		for _, pid := range pids {
+			exe := "?"
+			if pid != 0 {
+				if e, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid)); err == nil {
+					exe = oneWord(e)
+				}
+			}
+			lines = append(lines, fmt.Sprintf("listen: %s uid=%s inode=%s pid=%d exe=%s",
+				net.JoinHostPort(s.addr, strconv.Itoa(s.port)), s.uid, s.inode, pid, exe))
+		}
+	}
+	sort.Strings(lines)
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	for _, p := range missing {
+		fmt.Printf("missing: %d\n", p)
+	}
+	if len(missing) > 0 {
+		return 1
+	}
+	return 0
 }

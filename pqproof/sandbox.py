@@ -235,6 +235,12 @@ class Session:
             raise SandboxError(f"msb exec -d failed: {r.stderr.strip()[-300:]}")
         return str(r.stdout).strip()
 
+    def logs(self, job, tail=50):
+        """The last `tail` lines a background job (from start) printed, stdout and stderr; it is
+        the guest's text, so it is treated like any step output. '' when msb cannot read it."""
+        r = self.runner._msb(self.host_commands, "logs", "--job", str(job), "--tail", str(int(tail)), self.name)
+        return str(_as_captured(r.stdout)) + str(_as_captured(r.stderr)) if r.returncode == 0 else ""
+
     def copy_in(self, src, dest):
         """Copy a host file or directory to an absolute guest path. Symlinks are copied as links."""
         if not GUEST_PATH.fullmatch(dest):

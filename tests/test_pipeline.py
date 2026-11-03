@@ -147,14 +147,36 @@ class FakeSession:
             out = f"tls_probe {prove.PROBE_VERSION} (go1.27.3)\n"
         elif argv[:2] == ["tls_probe", "connect"]:
             out = self.runner.answer(argv)
+        elif argv[:2] == ["tls_probe", "listeners"]:
+            self.runner.listener_calls += 1
+            out = self.runner.listeners[min(self.runner.listener_calls, len(self.runner.listeners)) - 1]
         e = FakeExec(argv, out)
         self.execs.append(e)
         return e
 
 
+    def logs(self, job, tail=50):
+        return f"(log of {job})"
+
+
+# What `tls_probe listeners` printed in orders-edge's prove microVM (format of probe/tls_probe.go).
+LISTENERS = """listen: 0.0.0.0:8443 uid=65534 inode=31 pid=20 exe=/usr/sbin/nginx
+listen: 0.0.0.0:8443 uid=65534 inode=31 pid=21 exe=/usr/sbin/nginx
+listen: 127.0.0.1:4433 uid=0 inode=11 pid=10 exe=/usr/local/bin/tls_probe
+listen: 127.0.0.1:4434 uid=0 inode=12 pid=12 exe=/usr/local/bin/tls_probe
+listen: 127.0.0.1:9443 uid=65533 inode=41 pid=30 exe=/usr/local/bin/api
+"""
+# Review day 2 (S1): the API took 127.0.0.1:8443 first; nginx could not bind and exited.
+SQUATTED = """listen: 127.0.0.1:4433 uid=0 inode=11 pid=10 exe=/usr/local/bin/tls_probe
+listen: 127.0.0.1:4434 uid=0 inode=12 pid=12 exe=/usr/local/bin/tls_probe
+listen: 127.0.0.1:8443 uid=65533 inode=40 pid=30 exe=/usr/local/bin/api
+listen: 127.0.0.1:9443 uid=65533 inode=41 pid=30 exe=/usr/local/bin/api
+"""
+
+
 class FakeRunner:
-    def __init__(self, answer=None, probe_bytes=b""):
-        self.log, self.probe_bytes = [], probe_bytes
+    def __init__(self, answer=None, probe_bytes=b"", listeners=(LISTENERS,)):
+        self.log, self.probe_bytes, self.listeners, self.listener_calls = [], probe_bytes, list(listeners), 0
         if answer:
             self.answer = answer
 
@@ -178,7 +200,8 @@ PLAN = {"version": 1, "summary": "s", "edits": [{"path": "nginx/nginx.conf", "wh
         "commands": [["make", "test"], ["go", "build", "-o=out/api", "./cmd/api"],
                      ["nginx", "-t", "-c", "/work/src/nginx/nginx.conf"], ["nginx", "-c", "/work/src/nginx/nginx.conf"],
                      ["api"]],
-        "images": [GO, NG], "targets": ["127.0.0.1:8443", "127.0.0.1:9443"]}
+        "images": [GO, NG], "targets": [{"addr": "127.0.0.1:8443", "server": "nginx"},
+                                        {"addr": "127.0.0.1:9443", "server": "api"}]}
 
 
 def forged_probe(argv):
@@ -269,12 +292,56 @@ class Verdict(unittest.TestCase):
         self.assertIn("proof invalid", res.raw_error)
         self.assertIn("/usr/local/bin/tls_probe changed", res.raw_error)
 
+    def test_a_server_on_another_server_s_port_is_caught(self):
+        FakeRunner.hybrid_servers = True  # whatever answers would speak hybrid
+        self.addCleanup(setattr, FakeRunner, "hybrid_servers", False)
+        pipe, root, runner = fake_pipeline(self, compile_allowlist(PLAN), FakeRunner(listeners=[SQUATTED]))
+        res = pipe.build_and_prove(root, 0)
+        self.assertFalse(res.ok)
+        self.assertIn("127.0.0.1:8443 must be served by nginx", res.raw_error)
+        self.assertIn("exe=/usr/local/bin/api", res.raw_error)
+        self.assertIn("(log of job)", res.raw_error)  # the servers' own output goes back too
+        self.assertEqual(res.detail["verdict"]["targets"], {})
+
+    def test_a_port_nobody_holds_fails_and_a_taken_reference_port_invalidates_the_proof(self):
+        FakeRunner.hybrid_servers = True
+        self.addCleanup(setattr, FakeRunner, "hybrid_servers", False)
+        missing = "".join(ln + "\n" for ln in LISTENERS.splitlines() if ":9443 " not in ln) + "missing: 9443\n"
+        pipe, root, _ = fake_pipeline(self, compile_allowlist(PLAN), FakeRunner(listeners=[missing]))
+        res = pipe.build_and_prove(root, 0)
+        self.assertFalse(res.ok)
+        self.assertIn("127.0.0.1:9443 must be served by api (uid 65533, /usr/local/bin/api); listening on port 9443:\n  nothing",
+                      res.raw_error)
+        # the probe's reference server must be the probe itself, as root
+        taken = LISTENERS.replace("uid=0 inode=11 pid=10 exe=/usr/local/bin/tls_probe", "uid=65533 inode=11 pid=30 exe=/usr/local/bin/api")
+        pipe, root, _ = fake_pipeline(self, compile_allowlist(PLAN), FakeRunner(listeners=[taken]))
+        res = pipe.build_and_prove(root, 0)
+        self.assertTrue(res.raw_error.startswith("proof invalid"), res.raw_error)
+        self.assertIn("127.0.0.1:4433 must be served by tls_probe", res.raw_error)
+        # a line the parser cannot read vouches for nothing; one wrong holder among right ones fails
+        extra = LISTENERS + "listen: 0.0.0.0:8443 uid=65533 inode=31 pid=30 exe=/usr/local/bin/api\n"
+        for out in (LISTENERS.replace("exe=/usr/local/bin/api", "exe=/usr/local/bin/api x"), extra):
+            pipe, root, _ = fake_pipeline(self, compile_allowlist(PLAN), FakeRunner(listeners=[out]))
+            with self.subTest(out=out[-80:]):
+                self.assertFalse(pipe.build_and_prove(root, 0).ok)
+
+    def test_listeners_that_change_during_the_proof_are_caught(self):
+        FakeRunner.hybrid_servers = True
+        self.addCleanup(setattr, FakeRunner, "hybrid_servers", False)
+        moved = LISTENERS.replace("inode=41 pid=30", "inode=42 pid=31")
+        pipe, root, runner = fake_pipeline(self, compile_allowlist(PLAN), FakeRunner(listeners=[LISTENERS, moved]))
+        res = pipe.build_and_prove(root, 0)
+        self.assertFalse(res.ok)
+        self.assertIn("listening sockets changed", res.raw_error)
+        self.assertEqual(runner.listener_calls, 2)
+
     def test_hybrid_servers_pass(self):
         FakeRunner.hybrid_servers = True
         self.addCleanup(setattr, FakeRunner, "hybrid_servers", False)
         pipe, root, _ = fake_pipeline(self, compile_allowlist(PLAN))
         res = pipe.build_and_prove(root, 0)
         self.assertTrue(res.ok, res.raw_error)
+        self.assertEqual(res.detail["verdict"]["listeners"], LISTENERS.splitlines())
 
 
 # Review day 2, S5: one edit in an approved file (internal/tlsconf/tlsconf.go) adds an init() to the
@@ -299,6 +366,42 @@ func init() {
 \t}
 }
 """
+# Review day 2, S1: edits in approved files only; the API also listens on nginx's port 8443 from an
+# init() (with Go 1.27's default groups, hybrid), so nginx cannot bind it and the API answers instead.
+SQUAT_INIT = """// init also answers on the edge port (review day 2, S1).
+func init() {
+\tif filepath.Base(os.Args[0]) != "api" {
+\t\treturn
+\t}
+\tpair, err := tls.LoadX509KeyPair("/etc/orders-edge/tls/cert.pem", "/etc/orders-edge/tls/key.pem")
+\tif err != nil {
+\t\treturn
+\t}
+\tln, err := tls.Listen("tcp", "127.0.0.1:8443", &tls.Config{Certificates: []tls.Certificate{pair}})
+\tif err != nil {
+\t\treturn
+\t}
+\tgo func() {
+\t\tfor {
+\t\t\tc, err := ln.Accept()
+\t\t\tif err != nil {
+\t\t\t\treturn
+\t\t\t}
+\t\t\tgo func() { defer c.Close(); c.(*tls.Conn).Handshake() }()
+\t\t}
+\t}()
+}
+
+"""
+SQUAT_EDITS = [
+    {"path": "go.mod", "old": "go 1.22\n", "new": "go 1.27\n"},
+    {"path": "internal/tlsconf/tlsconf.go", "old": 'import "crypto/tls"\n',
+     "new": 'import (\n\t"crypto/tls"\n\t"os"\n\t"path/filepath"\n)\n'},
+    {"path": "internal/tlsconf/tlsconf.go", "old": "CurvePreferences: []tls.CurveID{tls.CurveP256},",
+     "new": "CurvePreferences: []tls.CurveID{tls.X25519MLKEM768, tls.X25519, tls.CurveP256},"},
+    {"path": "internal/tlsconf/tlsconf.go", "old": "// Server returns the TLS configuration for the API listener.\n",
+     "new": SQUAT_INIT + "// Server returns the TLS configuration for the API listener.\n"},
+]
 FORGE_EDIT = {"path": "internal/tlsconf/tlsconf.go", "old": 'import "crypto/tls"\n',
               "new": 'import (\n\t"crypto/tls"\n\t"os"\n\t"path/filepath"\n)\n' + FORGE_INIT}
 
@@ -350,6 +453,14 @@ class RealAttacks(unittest.TestCase):
             self.assertEqual(v["targets"][target]["classical"]["group"], "P-256")
         self.assertIsNotNone(res.detail["prove"]["destroyed_at"])
 
+    def test_the_api_cannot_answer_on_nginx_s_port(self):
+        res = self.prove_with(SQUAT_EDITS)
+        self.assertFalse(res.ok, res.detail.get("verdict"))
+        self.assertIn("127.0.0.1:8443 must be served by nginx", res.raw_error)
+        self.assertIn("exe=/usr/local/bin/api", res.raw_error)
+        self.assertIn("Address already in use", res.raw_error)  # nginx's own error, from its job log
+        self.assertEqual(res.detail["verdict"]["targets"], {})
+
 
 class Audit(unittest.TestCase):
     def test_host_build_count(self):
@@ -373,10 +484,11 @@ class EndToEnd(unittest.TestCase):
         self.assertTrue(report["passed"])
         self.assertEqual(report["checks"]["host_build_commands"], 0)
         # review day 2: the run must have probed orders-edge's two TLS ports, not nothing
-        self.assertEqual(report["plan"]["targets"], ["127.0.0.1:8443", "127.0.0.1:9443"])
+        self.assertEqual(report["plan"]["targets"], [{"addr": "127.0.0.1:8443", "server": "nginx"},
+                                                     {"addr": "127.0.0.1:9443", "server": "api"}])
         self.assertTrue(report["checks"]["targets_are_orders_edge_ports"])
         for step in [report["baseline"]] + report["attempts"][-1:]:
-            self.assertEqual(sorted(step["detail"]["verdict"]["targets"]), report["plan"]["targets"])
+            self.assertEqual(sorted(step["detail"]["verdict"]["targets"]), ["127.0.0.1:8443", "127.0.0.1:9443"])
 
 
 if __name__ == "__main__":

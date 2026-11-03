@@ -3,7 +3,7 @@ import copy
 import unittest
 
 from pqproof.plan import PLAN_SCHEMA, PlanError, compile_allowlist
-from pqproof.prove import CONTROL_ADDR as PROBE_CONTROL
+from pqproof.plan import PROBE_ADDRS
 
 DIGEST = "a" * 64
 PLAN = {
@@ -17,7 +17,7 @@ PLAN = {
     ],
     "commands": [["make", "test"], ["go", "build", "./..."], ["nginx", "-t", "-c", "/work/nginx/nginx.conf"]],
     "images": [f"golang:1.25-bookworm@sha256:{DIGEST}", f"nginx@sha256:{DIGEST}"],
-    "targets": ["127.0.0.1:8443"],
+    "targets": [{"addr": "127.0.0.1:8443", "server": "nginx"}],
 }
 
 
@@ -94,10 +94,29 @@ class Compile(unittest.TestCase):
         self.assertEqual(PLAN_SCHEMA["properties"]["targets"]["minItems"], 1)
 
     def test_targets_are_loopback_only(self):
-        ok = compile_allowlist(plan_with(targets=["127.0.0.1:8443", "127.0.0.1:9443", "127.0.0.1:1", "127.0.0.1:65535"]))
-        self.assertEqual(ok.targets, frozenset({"127.0.0.1:8443", "127.0.0.1:9443", "127.0.0.1:1", "127.0.0.1:65535"}))
-        for bad in (["203.0.113.7:80"], ["0.0.0.0:8443"], ["localhost:8443"], ["127.0.0.1:8443/x"], [8443], "127.0.0.1:1",
-                    ["127.0.0.1:0"], ["127.0.0.1:99999"], ["127.0.0.1:65536"], ["127.0.0.1:08443"]):
+        def t(*addrs):
+            return [{"addr": a, "server": "nginx"} for a in addrs]
+        ok = compile_allowlist(plan_with(targets=t("127.0.0.1:8443", "127.0.0.1:9443", "127.0.0.1:1", "127.0.0.1:65535")))
+        self.assertEqual(ok.addrs, frozenset({"127.0.0.1:8443", "127.0.0.1:9443", "127.0.0.1:1", "127.0.0.1:65535"}))
+        for bad in (t("203.0.113.7:80"), t("0.0.0.0:8443"), t("localhost:8443"), t("127.0.0.1:8443/x"), [8443],
+                    "127.0.0.1:1", t("127.0.0.1:0"), t("127.0.0.1:99999"), t("127.0.0.1:65536"), t("127.0.0.1:08443"),
+                    ["127.0.0.1:8443"]):  # a bare address does not say which server must answer
+            with self.subTest(bad=bad), self.assertRaises(PlanError):
+                compile_allowlist(plan_with(targets=bad))
+
+    def test_each_target_names_the_server_that_must_own_its_port(self):
+        # review day 2 (S1): the API took nginx's port and answered in its place
+        cmds = PLAN["commands"] + [["go", "build", "-o=out/api", "./cmd/api"], ["api"]]
+        allow = compile_allowlist(plan_with(commands=cmds, targets=[{"addr": "127.0.0.1:8443", "server": "nginx"},
+                                                                    {"addr": "127.0.0.1:9443", "server": "api"}]))
+        self.assertEqual(allow.targets, frozenset({("127.0.0.1:8443", "nginx"), ("127.0.0.1:9443", "api")}))
+        self.assertEqual(allow.to_json()["targets"], [{"addr": "127.0.0.1:8443", "server": "nginx"},
+                                                      {"addr": "127.0.0.1:9443", "server": "api"}])
+        for bad in ([{"addr": "127.0.0.1:9443", "server": "api"}],             # api is not built by this plan
+                    [{"addr": "127.0.0.1:8443", "server": "tls_probe"}],
+                    [{"addr": "127.0.0.1:8443"}],
+                    [{"addr": "127.0.0.1:8443", "server": "nginx", "pid": 1}],
+                    [{"addr": "127.0.0.1:8443", "server": "nginx"}, {"addr": "127.0.0.1:8443", "server": "nginx"}]):
             with self.subTest(bad=bad), self.assertRaises(PlanError):
                 compile_allowlist(plan_with(targets=bad))
 
@@ -106,13 +125,13 @@ class Compile(unittest.TestCase):
         for targets in (None, []):
             with self.subTest(targets=targets), self.assertRaises(PlanError):
                 compile_allowlist(plan_with(targets=targets))
-        with self.assertRaises(PlanError):
-            compile_allowlist(plan_with(targets=["127.0.0.1:8443", "127.0.0.1:8443"]))
 
     def test_the_probe_s_own_server_is_not_a_target(self):
         # review day 2: 127.0.0.1:4433 is the probe's reference server, which always speaks hybrid
-        with self.assertRaises(PlanError):
-            compile_allowlist(plan_with(targets=["127.0.0.1:8443", PROBE_CONTROL]))
+        for addr in PROBE_ADDRS:
+            with self.subTest(addr=addr), self.assertRaises(PlanError):
+                compile_allowlist(plan_with(targets=[{"addr": "127.0.0.1:8443", "server": "nginx"},
+                                                     {"addr": addr, "server": "nginx"}]))
 
     def test_a_plan_may_run_what_it_builds(self):
         cmds = [["go", "build", "-trimpath", "-o=out/api", "./cmd/api"], ["api"], ["api", "-addr=127.0.0.1:9443"]]
