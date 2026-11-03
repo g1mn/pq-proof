@@ -45,8 +45,8 @@ ABS_PATH = r"(?:/[A-Za-z0-9_.-]+)+"
 SEGMENT = r"[A-Za-z0-9_-][A-Za-z0-9_.-]*"  # never "." or "..", never hidden
 REL_OUT = rf"(?:{SEGMENT}/)*{SEGMENT}"  # go build -o=out/api: inside the work tree
 LOOPBACK = r"127\.0\.0\.1:[1-9][0-9]{0,4}"  # servers are probed inside their own microVM
-# tls_probe's own reference server (prove.CONTROL_ADDR) speaks hybrid by design: never a target.
-PROBE_ADDRS = frozenset({"127.0.0.1:4433"})
+# tls_probe's own reference servers (prove.CONTROL_ADDR, prove.NEGATIVE_ADDR): never a target.
+PROBE_ADDRS = frozenset({"127.0.0.1:4433", "127.0.0.1:4434"})
 PROGRAMS = {
     "make": (None, TARGET),
     "go": ("build|test|vet", rf"{GO_PACKAGE}|-v|-count=1|-mod=vendor|-trimpath|-o={REL_OUT}"),

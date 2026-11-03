@@ -5,7 +5,9 @@ a pinned golang image and copied into every microVM that is tested. A client fro
 own image would not do: orders-edge's image has OpenSSL 3.0, which does not know the name
 X25519MLKEM768, so a red baseline would say nothing about the server. Before a server is judged,
 the same probe must negotiate X25519MLKEM768 with its own reference server in the same microVM
-(the positive control). Success is read from the probe's output, never from a model.
+(the positive control). Success is read from the probe's output, never from a model. The same probe must also fail to connect, offering
+only X25519MLKEM768, to a classical-only reference server (the negative control): a probe that
+always reports hybrid, for instance one that code in the microVM replaced with a script, fails it.
 
 parse() also reads `openssl s_client` output, so an OpenSSL 3.5+ client can cross-check:
 - hybrid: "Negotiated TLS1.3 group: X25519MLKEM768"
@@ -32,8 +34,10 @@ BUILD_PROBE = ("go", "build", "-trimpath", "-o=tls_probe", ".")
 HYBRID_GROUPS = ("X25519MLKEM768", "SecP256r1MLKEM768", "SecP384r1MLKEM1024")
 OFFER_HYBRID = "X25519MLKEM768"  # a client that only speaks hybrid: success means ML-KEM was negotiated
 OFFER_CLASSICAL = "X25519,P-256"  # a client from before ML-KEM
-CONTROL_ADDR = "127.0.0.1:4433"
-assert CONTROL_ADDR in PROBE_ADDRS  # plans may not name it as a target
+CONTROL_ADDR = "127.0.0.1:4433"  # reference server, hybrid and classical: the positive control
+NEGATIVE_ADDR = "127.0.0.1:4434"  # reference server, X25519 only: the negative control
+NEGATIVE_GROUPS = "X25519"
+assert {CONTROL_ADDR, NEGATIVE_ADDR} <= PROBE_ADDRS  # plans may not name them as targets
 
 
 class ProveError(RuntimeError):
@@ -133,12 +137,21 @@ def connect_argv(target, groups, tls_dir, servername="localhost"):
             "-wait=10s", target]
 
 
+def serve_argv(addr, groups, tls_dir):
+    return [PROBE_NAME, "serve", f"-addr={addr}", f"-groups={groups}", f"-cert={tls_dir}/cert.pem",
+            f"-key={tls_dir}/key.pem"]
+
+
+REFERENCES = ((CONTROL_ADDR, f"{OFFER_HYBRID},X25519"), (NEGATIVE_ADDR, NEGATIVE_GROUPS))
+
+
 def probe_allowlist(targets, tls_dir, servername="localhost", hosts="localhost,127.0.0.1"):
     """The control plane's fixed probe commands for one prove microVM."""
-    cmds = {(PROBE_NAME, "version"), (PROBE_NAME, "cert", f"-hosts={hosts}", tls_dir),
-            (PROBE_NAME, "serve", f"-addr={CONTROL_ADDR}", f"-groups={OFFER_HYBRID},X25519",
-             f"-cert={tls_dir}/cert.pem", f"-key={tls_dir}/key.pem")}
+    cmds = {(PROBE_NAME, "version"), (PROBE_NAME, "cert", f"-hosts={hosts}", tls_dir)}
+    cmds |= {tuple(serve_argv(addr, groups, tls_dir)) for addr, groups in REFERENCES}
     cmds.add(tuple(connect_argv(CONTROL_ADDR, OFFER_HYBRID, tls_dir)))
+    for groups in (OFFER_HYBRID, OFFER_CLASSICAL):
+        cmds.add(tuple(connect_argv(NEGATIVE_ADDR, groups, tls_dir)))
     for t in targets:
         for groups in (OFFER_HYBRID, OFFER_CLASSICAL):
             cmds.add(tuple(connect_argv(t, groups, tls_dir, servername)))
@@ -157,15 +170,38 @@ def install_probe(session, probe, tls_dir, hosts="localhost,127.0.0.1"):
     return str(v.stdout).strip()
 
 
-def positive_control(session, tls_dir):
-    """The probe must negotiate X25519MLKEM768 with its own reference server in this microVM."""
-    session.start([PROBE_NAME, "serve", f"-addr={CONTROL_ADDR}", f"-groups={OFFER_HYBRID},X25519",
-                   f"-cert={tls_dir}/cert.pem", f"-key={tls_dir}/key.pem"])
-    r = session.exec(connect_argv(CONTROL_ADDR, OFFER_HYBRID, tls_dir))
-    h = parse(r.stdout)
-    if h.kind != "hybrid" or h.group != OFFER_HYBRID:
-        raise ProveError(f"positive control failed, so no server verdict is valid in this microVM: {r.stdout}{r.stderr}")
-    return h, r
+def start_references(session, tls_dir):
+    """Start the probe's two reference servers. Call it before any server of the repo starts, so
+    none of them can take the reference addresses first."""
+    for addr, groups in REFERENCES:
+        session.start(serve_argv(addr, groups, tls_dir))
+
+
+def controls(session, tls_dir):
+    """Run both controls: {'positive': (Handshake, Exec), 'negative_hybrid': ..., 'negative_classical': ...}."""
+    out = {}
+    for name, addr, groups in (("positive", CONTROL_ADDR, OFFER_HYBRID), ("negative_hybrid", NEGATIVE_ADDR, OFFER_HYBRID),
+                               ("negative_classical", NEGATIVE_ADDR, OFFER_CLASSICAL)):
+        r = session.exec(connect_argv(addr, groups, tls_dir))
+        out[name] = (parse(r.stdout), r)
+    return out
+
+
+def control_problem(results):
+    """Why no server verdict is valid in this microVM, or None when both controls hold:
+    - positive: offering only X25519MLKEM768 to the hybrid reference server negotiates X25519MLKEM768;
+    - negative: offering only X25519MLKEM768 to the X25519-only reference server fails, and a
+      classical client connects to it with X25519."""
+    (pos, pr), (neg, nr), (cls, cr) = results["positive"], results["negative_hybrid"], results["negative_classical"]
+    if pos.kind != "hybrid" or pos.group != OFFER_HYBRID:
+        return f"positive control failed (expected {OFFER_HYBRID} from the reference server):\n{pr.stdout}{pr.stderr}"
+    if neg.kind != "failed":
+        return ("negative control failed: a hybrid-only client reported a connection to the X25519-only reference "
+                f"server, so the probe's output cannot be trusted in this microVM:\n{nr.stdout}{nr.stderr}")
+    if cls.kind != "classical" or cls.group != NEGATIVE_GROUPS:
+        return f"negative control failed (expected a classical X25519 handshake):\n{cr.stdout}{cr.stderr}"
+    return None
+
 
 
 def probe_target(session, target, tls_dir, servername="localhost"):

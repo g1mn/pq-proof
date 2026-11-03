@@ -7,8 +7,8 @@
 3. Plan from e2e/orders-edge-scripted-model.json; its image tags are resolved to
    name:tag@sha256:<platform digest> with msb pull + msb image inspect and shown for approval.
 4. tls_probe built inside a microVM.
-5. Baseline: build and prove the unmodified snapshot. Expected: hybrid fails on every target,
-   the classical client still connects.
+5. Baseline: build and prove the unmodified snapshot. Expected: both probe controls hold, hybrid
+   fails on every target, the classical client still connects.
 6. Patch loop (at most 3 attempts) with the scripted edits; each failure's raw output is fed back.
 7. CBOM after, then checks: the final build negotiates X25519MLKEM768 on every target and the
    classical client still connects; every build and server command ran inside `msb exec` (host
@@ -72,7 +72,9 @@ def snapshot(repo, dest, rec):
 def baseline_ok(res, targets):
     v = res.detail.get("verdict") or {}
     t = v.get("targets", {})
+    neg = v.get("negative_control") or {}
     return ("build" in res.detail and (v.get("positive_control") or {}).get("kind") == "hybrid"
+            and (neg.get("hybrid") or {}).get("kind") == "failed" and (neg.get("classical") or {}).get("kind") == "classical"
             and bool(targets) and sorted(t) == sorted(targets)
             and all(t[x].get("hybrid", {}).get("kind") == "failed" and
                     t[x].get("classical", {}).get("kind") in ("classical", "hybrid") for x in targets))

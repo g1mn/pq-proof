@@ -133,16 +133,21 @@ class FakeSession:
 
 
 class FakeRunner:
-    def __init__(self):
+    def __init__(self, answer=None):
         self.log = []
+        if answer:
+            self.answer = answer
 
     def session(self, allow, job, step, image, limits=None):
         return FakeSession(self, allow, step, image, limits)
 
+    hybrid_servers = False
+
     @staticmethod
     def answer(argv):
         target, offered = argv[-1], next(a for a in argv if a.startswith("-groups="))[8:].split(",")
-        if target == prove.CONTROL_ADDR:
+        if target == prove.CONTROL_ADDR or (target != prove.NEGATIVE_ADDR and "X25519MLKEM768" in offered
+                                            and FakeRunner.hybrid_servers):
             return "result: connected\nprotocol: TLS 1.3\ngroup: X25519MLKEM768\n"
         if "X25519" in offered:
             return "result: connected\nprotocol: TLS 1.3\ngroup: X25519\n"
@@ -156,7 +161,13 @@ PLAN = {"version": 1, "summary": "s", "edits": [{"path": "nginx/nginx.conf", "wh
         "images": [GO, NG], "targets": ["127.0.0.1:8443", "127.0.0.1:9443"]}
 
 
-def fake_pipeline(test, allow):
+def forged_probe(argv):
+    """What the probe printed once review day 2's planted init() had replaced it with a shell script."""
+    offered = next(a for a in argv if a.startswith("-groups="))[8:]
+    return f"result: connected\nprotocol: TLS 1.3\ngroup: {'X25519MLKEM768' if 'MLKEM' in offered else 'X25519'}\n"
+
+
+def fake_pipeline(test, allow, runner=None):
     d = tempfile.TemporaryDirectory()
     test.addCleanup(d.cleanup)
     root = pathlib.Path(d.name, "snap")
@@ -166,7 +177,7 @@ def fake_pipeline(test, allow):
     scratch.mkdir()
     probe = prove.Probe("tls_probe", prove.PROBE_VERSION, "0" * 64, "0" * 64, GO, os.devnull)
     lay = TlsLayout("nginx/nginx.conf", "/etc/orders-edge/tls", "orders-edge.local", "localhost,127.0.0.1")
-    runner = FakeRunner()
+    runner = runner or FakeRunner()
     pins = {"golang:1.27-bookworm": GO, "nginx:1.30-trixie": NG}
     return Pipeline(runner, allow, probe, lay, pins, "t", str(scratch)), str(root), runner
 
@@ -189,6 +200,35 @@ class Verdict(unittest.TestCase):
         self.assertFalse(res.ok, res.detail.get("verdict"))
         self.assertIn("no target", res.raw_error)
         self.assertEqual(runner.log, [])  # nothing was built or started
+
+    def test_a_probe_that_always_says_hybrid_is_caught(self):
+        # review day 2 (S5): code in the prove microVM swapped tls_probe for a script that always
+        # printed X25519MLKEM768; the positive control passed and so did every target.
+        pipe, root, _ = fake_pipeline(self, compile_allowlist(PLAN), FakeRunner(forged_probe))
+        res = pipe.build_and_prove(root, 0)
+        self.assertFalse(res.ok, res.detail.get("verdict"))
+        self.assertIn("negative control", res.raw_error)
+        self.assertEqual(res.detail["verdict"]["targets"], {})  # no server verdict from a probe that lies
+        self.assertIsNotNone(res.detail["prove"]["destroyed_at"])
+
+    def test_negative_control_and_reference_servers_start_before_the_repo_s_servers(self):
+        pipe, root, runner = fake_pipeline(self, compile_allowlist(PLAN))
+        res = pipe.build_and_prove(root, 0)
+        starts = [e[1] for e in runner.log if e[0] == "start"]
+        serves = [a for a in starts if a[:2] == ["tls_probe", "serve"]]
+        self.assertEqual([a[2] for a in serves], [f"-addr={prove.CONTROL_ADDR}", f"-addr={prove.NEGATIVE_ADDR}"])
+        self.assertIn("-groups=X25519", serves[1])  # classical only
+        self.assertEqual(starts[:2], serves)
+        neg = res.detail["verdict"]["negative_control"]
+        self.assertEqual((neg["hybrid"]["kind"], neg["classical"]["kind"], neg["classical"]["group"]),
+                         ("failed", "classical", "X25519"))
+
+    def test_hybrid_servers_pass(self):
+        FakeRunner.hybrid_servers = True
+        self.addCleanup(setattr, FakeRunner, "hybrid_servers", False)
+        pipe, root, _ = fake_pipeline(self, compile_allowlist(PLAN))
+        res = pipe.build_and_prove(root, 0)
+        self.assertTrue(res.ok, res.raw_error)
 
 
 class Audit(unittest.TestCase):

@@ -64,6 +64,19 @@ class Parse(unittest.TestCase):
 
 
 class FixedCommands(unittest.TestCase):
+    def test_control_problem(self):
+        def r(text):
+            return prove.parse(text), type("E", (), {"stdout": text, "stderr": ""})()
+        hybrid = "result: connected\ngroup: X25519MLKEM768\n"
+        x25519 = "result: connected\ngroup: X25519\n"
+        failed = "result: failed\nerror: remote error: tls: handshake failure\n"
+        good = {"positive": r(hybrid), "negative_hybrid": r(failed), "negative_classical": r(x25519)}
+        self.assertIsNone(prove.control_problem(good))
+        for name, text, why in (("positive", failed, "positive control"), ("negative_hybrid", hybrid, "negative control"),
+                                ("negative_classical", failed, "negative control")):
+            with self.subTest(name=name):
+                self.assertIn(why, prove.control_problem({**good, name: r(text)}))
+
     def test_every_probe_command_fits_the_program_allowlist(self):
         allow = prove.probe_allowlist(["127.0.0.1:8443", "127.0.0.1:9443"], "/etc/orders-edge/tls",
                                       servername="orders-edge.local", hosts="localhost,127.0.0.1,orders-edge.local")
@@ -118,19 +131,23 @@ class RealProbe(unittest.TestCase):
                          ("tls_probe", prove.PROBE_VERSION, GOLANG.ref))
         self.assertTrue(data.startswith(b"\x7fELF"))
 
-    def test_positive_control_classical_and_failed_in_an_openssl_30_image(self):
-        weak = ("tls_probe", "serve", "-addr=127.0.0.1:4434", "-groups=P-256",
+    def test_controls_classical_and_failed_in_an_openssl_30_image(self):
+        weak = ("tls_probe", "serve", "-addr=127.0.0.1:4435", "-groups=P-256",
                 f"-cert={self.TLS}/cert.pem", f"-key={self.TLS}/key.pem")
-        allow = prove.probe_allowlist(["127.0.0.1:4433", "127.0.0.1:4434"], self.TLS).union(
+        allow = prove.probe_allowlist([prove.CONTROL_ADDR, "127.0.0.1:4435"], self.TLS).union(
             Allowlist(commands=frozenset({weak}), paths=frozenset(), images=frozenset({NGINX_BOOKWORM.ref})))
         with self.runner.session(allow, "probe", "test", NGINX_BOOKWORM.ref) as s:
             version = prove.install_probe(s, self.probe, self.TLS)
-            control, _ = prove.positive_control(s, self.TLS)
+            prove.start_references(s, self.TLS)
+            ctl = prove.controls(s, self.TLS)
             vs_control = prove.probe_target(s, prove.CONTROL_ADDR, self.TLS)
             s.start(list(weak))
-            vs_weak = prove.probe_target(s, "127.0.0.1:4434", self.TLS)
-        self.assertRegex(version, r"^tls_probe 0\.1\.0 \(go1\.\d+")
-        self.assertEqual((control.kind, control.group), ("hybrid", "X25519MLKEM768"))
+            vs_weak = prove.probe_target(s, "127.0.0.1:4435", self.TLS)
+        self.assertRegex(version, rf"^tls_probe {prove.PROBE_VERSION.replace('.', chr(92) + '.')} \(go1\.\d+")
+        self.assertIsNone(prove.control_problem(ctl))
+        self.assertEqual((ctl["positive"][0].kind, ctl["positive"][0].group), ("hybrid", "X25519MLKEM768"))
+        self.assertEqual(ctl["negative_hybrid"][0].kind, "failed")  # X25519-only reference server
+        self.assertEqual((ctl["negative_classical"][0].kind, ctl["negative_classical"][0].group), ("classical", "X25519"))
         self.assertEqual((vs_control["classical"][0].kind, vs_control["classical"][0].group), ("classical", "X25519"))
         self.assertEqual(vs_weak["hybrid"][0].kind, "failed")
         self.assertEqual((vs_weak["classical"][0].kind, vs_weak["classical"][0].group), ("classical", "P-256"))

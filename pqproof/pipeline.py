@@ -5,9 +5,9 @@ Nothing from the repo runs on the host. The repo's Dockerfile is read, never bui
   the snapshot and runs the plan's `make` and `go` commands offline (vendored modules, no proxy);
   the plan's `go build -o=out/NAME` result is copied out as one regular file;
 - prove: a microVM from the Dockerfile's last FROM image (the runtime) gets the snapshot, the built
-  program and tls_probe; it runs `nginx -t`, starts the built program and nginx as background
-  jobs, passes the probe's positive control, then probes every target twice (hybrid-only client,
-  classical client).
+  program and tls_probe; it runs `nginx -t`, starts the probe's two reference servers, then the
+  built program and nginx as background jobs; the probe must pass a positive and a negative
+  control, then it probes every target twice (hybrid-only client, classical client).
 Each step's raw output is what goes back to the model when it fails.
 """
 import hashlib
@@ -106,6 +106,10 @@ def _session_record(s, sinkhole=None):
                        "canaries": sorted({c for ev in events for c in ev["canaries"]})}}
 
 
+def _hs(h):
+    return {"kind": h.kind, "group": h.group, "error": h.error}
+
+
 def _raw(e):
     out = (str(e.stdout) + str(e.stderr))[-RAW_TAIL:]
     return f"$ {' '.join(e.argv)}\n(exit {e.exit_code}{', timed out' if e.timed_out else ''})\n{out}"
@@ -151,11 +155,12 @@ class Pipeline:
         if failed:
             return BuildResult(ok=False, raw_error=_raw(failed), detail=detail)
 
-        # prove: runtime image, probe, positive control, then every target
+        # prove: runtime image, probe, reference servers, the repo's servers, both controls, every target
         lay = self.layout
         allow = self.allow.union(prove.probe_allowlist(sorted(self.allow.targets), lay.tls_dir, lay.servername, lay.hosts))
         conf = f"{SRC}/{lay.nginx_conf}"
-        verdict = {"positive_control": None, "targets": {}}
+        verdict = {"positive_control": None, "negative_control": None, "targets": {}}
+        invalid = None
         with self.runner.session(allow, self.job, f"prove-{tag}", run_img, PROVE_LIMITS) as s:
             s.copy_in(workdir, SRC)
             for path in binaries:
@@ -165,13 +170,17 @@ class Pipeline:
             if e.exit_code != 0:
                 failed = e
             else:
+                prove.start_references(s, lay.tls_dir)  # before any repo server can take their ports
                 for path in binaries:  # the plan says whether to run what it built
                     if self.allow.allows_command([os.path.basename(path)]):
                         s.start([os.path.basename(path)])
                 s.start(["nginx", "-c", conf])
-                control, _ = prove.positive_control(s, lay.tls_dir)
-                verdict["positive_control"] = {"kind": control.kind, "group": control.group}
-                for target in sorted(self.allow.targets):
+                ctl = prove.controls(s, lay.tls_dir)
+                verdict["positive_control"] = _hs(ctl["positive"][0])
+                verdict["negative_control"] = {"hybrid": _hs(ctl["negative_hybrid"][0]),
+                                               "classical": _hs(ctl["negative_classical"][0])}
+                invalid = prove.control_problem(ctl)
+                for target in [] if invalid else sorted(self.allow.targets):
                     res = prove.probe_target(s, target, lay.tls_dir, lay.servername)
                     verdict["targets"][target] = {k: {"kind": h.kind, "group": h.group, "error": h.error,
                                                       "exit_code": ex.exit_code} for k, (h, ex) in res.items()}
@@ -181,6 +190,8 @@ class Pipeline:
                         failed = res["classical"][1]
         detail["prove"] = _session_record(s, self.sinkhole)
         detail["verdict"] = verdict
+        if invalid:
+            return BuildResult(ok=False, raw_error=f"proof invalid, no server was judged: {invalid}", detail=detail)
         if failed:
             return BuildResult(ok=False, raw_error=_raw(failed), detail=detail)
         return BuildResult(ok=True, detail=detail)
