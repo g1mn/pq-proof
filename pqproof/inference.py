@@ -156,7 +156,7 @@ def _error_message(body):
             return str(err.get("message") or err)
         if err:
             return str(err)
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, RecursionError):  # not JSON, not an object, or nested too deeply
         pass
     return body[:200].decode(errors="replace") if isinstance(body, bytes) else str(body)[:200]
 

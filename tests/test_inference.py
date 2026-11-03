@@ -166,6 +166,13 @@ class MalformedModelOutput(unittest.TestCase):
             with self.subTest(name), self.assertRaises(InferenceError):
                 self.chat(body_)
 
+    def test_deeply_nested_error_body(self):
+        deep = b'{"error": ' + b"[" * 100000 + b"]" * 100000 + b"}"  # RecursionError on Python 3.12
+        c, _ = client(FakeSend((400, {}, deep)))
+        with self.assertRaises(InferenceError) as cm:
+            c.chat([{"role": "user", "content": "x"}])
+        self.assertEqual(cm.exception.status, 400)
+
     def test_deeply_nested_arguments_become_a_call_error(self):
         args = '{"a":' * 100000 + "1" + "}" * 100000  # RecursionError on Python 3.12
         call = self.chat(reply_with([call_with(args)])).tool_calls[0]
