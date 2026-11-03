@@ -125,6 +125,36 @@ class RunStep(unittest.TestCase):
             self.step(msb)
         self.assertNotIn("exec", [a[1] for a, _ in msb.calls])
 
+    def test_rm_failure_is_not_reported_as_destroyed(self):
+        class StuckRm(FakeMsb):
+            def __call__(self, argv, timeout=None):
+                if argv[1] == "rm":
+                    self.calls.append((argv, timeout))
+                    return done(argv, 1, err="busy")
+                return super().__call__(argv, timeout)
+        msb = StuckRm(self.clock)
+        res = self.step(msb)
+        self.assertIn(res.name, msb.boxes)        # still listed
+        self.assertIsNone(res.destroyed_at)
+
+    def test_unknown_state_is_not_reported_as_destroyed(self):
+        class Blind(FakeMsb):  # rm fails and ls cannot say whether the sandbox is gone
+            def __call__(self, argv, timeout=None):
+                if argv[1] in ("rm", "ls"):
+                    return done(argv, 1, err="daemon unreachable")
+                return super().__call__(argv, timeout)
+        self.assertIsNone(self.step(Blind(self.clock)).destroyed_at)
+
+    def test_time_spent_in_create_comes_off_the_exec_timeout(self):
+        class SlowCreate(FakeMsb):
+            def __call__(self, argv, timeout=None):
+                if argv[1] == "create":
+                    self.clock.now += 10
+                return super().__call__(argv, timeout)
+        msb = SlowCreate(self.clock)
+        self.step(msb, limits=Limits(wall_clock_s=30))
+        self.assertEqual([t for a, t in msb.calls if a[1] == "exec"], [30 - 10 + 5])
+
     def test_names_are_checked(self):
         for bad in ("Job", "a b", "a/b", "", "x" * 50):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
@@ -227,6 +257,46 @@ class Reaper(unittest.TestCase):
         self.assertEqual(sorted(reaped), ["pq-old", "pq-stopped"])
         self.assertEqual(list(msb.boxes), ["pq-young"])
         self.assertEqual(msb.calls[0][0], ["msb", "ls", "--label", LABEL, "--format", "json"])
+
+    def test_one_malformed_entry_does_not_stop_the_others(self):
+        clock = Clock()
+        msb = FakeMsb(clock)
+        msb.boxes = {
+            "pq-weird": {"name": "pq-weird", "status": "Running"},                    # no created_at
+            "pq-none": {"name": "pq-none", "status": "Running", "created_at": None},
+            "pq-stopped-odd": {"name": "pq-stopped-odd", "status": "Stopped"},       # stopped is enough
+            "pq-old": {"name": "pq-old", "status": "Running", "image": "alpine",
+                       "created_at": datetime.datetime.fromtimestamp(T0 - 600, datetime.UTC).isoformat()},
+        }
+        with self.assertLogs("pqproof.sandbox", "INFO") as logs:
+            reaped = Runner(run=msb, clock=clock).reap(max_age_s=150)
+        self.assertEqual(sorted(reaped), ["pq-old", "pq-stopped-odd"])
+        self.assertEqual(sorted(msb.boxes), ["pq-none", "pq-weird"])
+        self.assertTrue(any("rm --force -q pq-old" in line for line in logs.output), logs.output)
+
+    def test_loop_survives_errors_and_retries(self):
+        class Flaky(FakeMsb):
+            fails = 2
+
+            def __call__(self, argv, timeout=None):
+                if argv[1] == "ls" and self.fails:
+                    self.fails -= 1
+                    raise (KeyError if self.fails else OSError)("msb went away")
+                return super().__call__(argv, timeout)
+        clock = Clock()
+        msb = Flaky(clock)
+        msb.boxes = {"pq-x": {"name": "pq-x", "status": "Stopped", "image": "alpine",
+                              "created_at": datetime.datetime.fromtimestamp(T0, datetime.UTC).isoformat()}}
+        with self.assertLogs("pqproof.sandbox", "WARNING"):
+            stop = Runner(run=msb, clock=clock).start_reaper(interval_s=0.02)
+            try:
+                for _ in range(200):
+                    if not msb.boxes:
+                        break
+                    time.sleep(0.01)
+            finally:
+                stop.set()
+        self.assertEqual(msb.boxes, {})
 
     def test_loop_runs_at_start(self):
         clock = Clock()

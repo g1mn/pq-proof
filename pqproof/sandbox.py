@@ -12,6 +12,7 @@ egress.py). Every msb command line is kept in StepResult.host_commands for the r
 import datetime
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -26,6 +27,7 @@ GRACE_S = 5
 KEEP = 1 << 20  # bytes kept of each output stream: its first and last 512 KiB
 DRAIN_S = 5
 NAME_PART = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+log = logging.getLogger(__name__)
 
 
 class SandboxError(RuntimeError):
@@ -196,13 +198,22 @@ class Runner:
         return json.loads(r.stdout or "[]")
 
     def reap(self, max_age_s):
-        """Remove pqproof sandboxes older than max_age_s, or already stopped. Returns their names."""
+        """Remove pqproof sandboxes older than max_age_s, or already stopped. Returns their names.
+
+        Each removal is logged with its msb command line. An entry that cannot be read is logged
+        and skipped without stopping the rest.
+        """
         now, reaped = self._clock(), []
         for sb in self.list():
-            age = now - datetime.datetime.fromisoformat(sb["created_at"]).timestamp()
-            if age > max_age_s or sb.get("status", "").lower() in ("stopped", "crashed"):
-                if self._run([self.msb, "rm", "--force", "-q", sb["name"]], timeout=60).returncode == 0:
-                    reaped.append(sb["name"])
+            try:
+                stopped = str(sb.get("status", "")).lower() in ("stopped", "crashed")
+                if stopped or now - datetime.datetime.fromisoformat(sb["created_at"]).timestamp() > max_age_s:
+                    argv = [self.msb, "rm", "--force", "-q", sb["name"]]
+                    if self._run(argv, timeout=60).returncode == 0:
+                        log.info("reaped: %s", " ".join(argv))
+                        reaped.append(sb["name"])
+            except Exception as e:  # noqa: BLE001 - one odd entry must not stop the reaper
+                log.warning("reaper skipped an entry: %s: %s", type(e).__name__, e)
         return reaped
 
     def start_reaper(self, max_age_s=Limits().wall_clock_s + 30, interval_s=60):
@@ -213,8 +224,8 @@ class Runner:
             while True:
                 try:
                     self.reap(max_age_s)
-                except (SandboxError, OSError, ValueError, subprocess.TimeoutExpired):
-                    pass  # the next tick retries
+                except Exception as e:  # noqa: BLE001 - a dead reaper thread would leave VMs behind
+                    log.warning("reaper: %s: %s (retrying next tick)", type(e).__name__, e)
                 if stop.wait(interval_s):
                     return
 
