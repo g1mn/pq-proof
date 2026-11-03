@@ -8,6 +8,9 @@ of edits to it, so a failed attempt leaves nothing behind. An edit is {"path", "
   anywhere on the path, not even one that points back inside;
 - the file is then opened one directory at a time with O_NOFOLLOW (dir_fd), so a symlink that
   appears between the check and the write still cannot be followed, and it must be a regular file.
+A patch that weakens TLS (verify.weakening: InsecureSkipVerify, proxy_ssl_verify off or its
+`on` line deleted, ...) is refused like an edit that does not apply: a failed attempt, never built,
+with the reason as feedback.
 The build's raw output goes back to the model verbatim (its last FEEDBACK_BYTES). Nothing the
 model says decides success: the build function's own exit codes and probe results do.
 """
@@ -20,6 +23,7 @@ from dataclasses import dataclass, field
 
 from .inference import tool_result
 from .plan import PlanError, clean_path
+from .verify import weakening
 
 MAX_ATTEMPTS = 3
 MAX_EDIT_FILE = 1 << 20
@@ -123,11 +127,16 @@ def run_loop(model, snapshot, allow, build, scratch, context=None, max_attempts=
         workdir = os.path.join(scratch, f"attempt-{n}")
         shutil.copytree(snapshot, workdir, symlinks=True)
         try:
-            diff = unified_diff(apply_edits(workdir, edits, allow))
+            changed = apply_edits(workdir, edits, allow)
         except EditError as e:
             result, diff = BuildResult(ok=False, raw_error=f"edit refused: {e}"), ""
         else:
-            result = build(workdir, n)
+            diff, weak = unified_diff(changed), weakening(changed)
+            if weak:
+                result = BuildResult(ok=False, raw_error="edit refused: the patch weakens TLS, which a key-exchange "
+                                                         "migration never needs:\n" + "\n".join(weak))
+            else:
+                result = build(workdir, n)
         attempts.append(Attempt(n, edits, diff, result))
         if result.ok:
             return Outcome(ok=True, attempts=attempts, workdir=workdir)
