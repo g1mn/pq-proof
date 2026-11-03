@@ -7,6 +7,7 @@ header cannot be carried to another origin.
 """
 import http.client
 import json
+import math
 import os
 import time
 import urllib.error
@@ -138,6 +139,8 @@ class Client:
         try:
             delay = float(retry_after)
         except (TypeError, ValueError):
+            delay = math.nan
+        if not math.isfinite(delay):  # absent, a date, NaN or inf: exponential backoff
             delay = self.backoff * 2 ** (attempt - 1)
         return min(max(delay, 0.0), MAX_DELAY_S)
 

@@ -143,6 +143,29 @@ class Retries(unittest.TestCase):
         c.chat([{"role": "user", "content": "x"}])
         self.assertEqual(len(send.calls), 2)
 
+    def test_500_and_504_are_retried(self):
+        for status in (500, 504):
+            with self.subTest(status=status):
+                send = FakeSend((status, {}, b"{}"), (200, {}, body("no_tool.json")))
+                c, sleeps = client(send)
+                c.chat([{"role": "user", "content": "x"}])
+                self.assertEqual((len(send.calls), sleeps), (2, [1.0]))
+
+    def test_connection_error_is_retried(self):
+        send = FakeSend(urllib.error.URLError(ConnectionRefusedError(61, "refused")), (200, {}, body("no_tool.json")))
+        c, sleeps = client(send)
+        c.chat([{"role": "user", "content": "x"}])
+        self.assertEqual((len(send.calls), sleeps), (2, [1.0]))
+
+    def test_odd_retry_after_values(self):
+        # Negative waits are clamped to 0; NaN and infinity fall back to backoff (NaN crashed time.sleep).
+        for value, expected in (("-5", 0.0), ("NaN", 1.0), ("inf", 1.0), ("soon", 1.0)):
+            with self.subTest(value=value):
+                send = FakeSend((429, {"Retry-After": value}, body("error_429.json")), (200, {}, body("no_tool.json")))
+                c, sleeps = client(send)
+                c.chat([{"role": "user", "content": "x"}])
+                self.assertEqual(sleeps, [expected])
+
     def test_retry_after_is_capped(self):
         send = FakeSend((429, {"retry-after": "3600"}, body("error_429.json")), (200, {}, body("no_tool.json")))
         c, sleeps = client(send)
