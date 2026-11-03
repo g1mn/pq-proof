@@ -122,6 +122,8 @@ class Pipeline:
     def build_and_prove(self, workdir, attempt):
         """BuildResult for one snapshot copy. attempt is a label: 0 for the baseline, then 1, 2, 3."""
         detail = {"attempt": attempt}
+        if not self.allow.targets:  # nothing probed is not a pass
+            return BuildResult(ok=False, raw_error="the approved plan names no target address to probe", detail=detail)
         try:
             build_img, run_img = stage_images(workdir, self.allow, self.pins)
         except PipelineError as e:

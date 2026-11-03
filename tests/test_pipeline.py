@@ -9,8 +9,10 @@ import sys
 import tempfile
 import unittest
 
-from pqproof.pipeline import PipelineError, guest_commands, host_build_count, stage_images, tls_layout
-from pqproof.plan import Allowlist
+from pqproof import prove
+from pqproof.pipeline import Layout as TlsLayout, Pipeline, PipelineError, guest_commands, host_build_count, stage_images, \
+    tls_layout
+from pqproof.plan import Allowlist, compile_allowlist
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 F1 = ROOT / "tests" / "fixtures" / "f1"
@@ -84,6 +86,111 @@ class Stages(unittest.TestCase):
                 stage_images(d, images(GO), {})
 
 
+class FakeExec:
+    def __init__(self, argv, out=""):
+        self.argv, self.exit_code, self.stdout, self.stderr, self.timed_out = list(argv), 0, out, "", False
+
+
+class FakeSession:
+    """A prove or build microVM in which every server is classical-only (P-256) except the probe's
+    own reference server. Commands must be in the session's allowlist, as with the real Session."""
+
+    def __init__(self, runner, allow, step, image, limits):
+        self.runner, self.allow, self.step, self.image, self.limits = runner, allow, step, image, limits
+        self.name, self.started_at, self.destroyed_at = f"fake-{step}", 0.0, None
+        self.host_commands, self.execs = [], []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.destroyed_at = 1.0
+
+    def copy_in(self, src, dest):
+        self.runner.log.append(("copy_in", dest))
+
+    def copy_out(self, src, dest_dir):
+        path = os.path.join(dest_dir, src.rsplit("/", 1)[-1])
+        pathlib.Path(path).write_bytes(b"built")
+        return path
+
+    def start(self, argv, **kw):
+        assert self.allow.allows_command(argv), argv
+        self.runner.log.append(("start", list(argv), kw))
+        return "job"
+
+    def exec(self, argv, **kw):
+        assert self.allow.allows_command(argv), argv
+        self.runner.log.append(("exec", list(argv), kw))
+        out = ""
+        if argv[:2] == ["tls_probe", "version"]:
+            out = f"tls_probe {prove.PROBE_VERSION} (go1.27.3)\n"
+        elif argv[:2] == ["tls_probe", "connect"]:
+            out = self.runner.answer(argv)
+        e = FakeExec(argv, out)
+        self.execs.append(e)
+        return e
+
+
+class FakeRunner:
+    def __init__(self):
+        self.log = []
+
+    def session(self, allow, job, step, image, limits=None):
+        return FakeSession(self, allow, step, image, limits)
+
+    @staticmethod
+    def answer(argv):
+        target, offered = argv[-1], next(a for a in argv if a.startswith("-groups="))[8:].split(",")
+        if target == prove.CONTROL_ADDR:
+            return "result: connected\nprotocol: TLS 1.3\ngroup: X25519MLKEM768\n"
+        if "X25519" in offered:
+            return "result: connected\nprotocol: TLS 1.3\ngroup: X25519\n"
+        return "result: failed\nerror: remote error: tls: handshake failure\n"
+
+
+PLAN = {"version": 1, "summary": "s", "edits": [{"path": "nginx/nginx.conf", "why": "w"}],
+        "commands": [["make", "test"], ["go", "build", "-o=out/api", "./cmd/api"],
+                     ["nginx", "-t", "-c", "/work/src/nginx/nginx.conf"], ["nginx", "-c", "/work/src/nginx/nginx.conf"],
+                     ["api"]],
+        "images": [GO, NG], "targets": ["127.0.0.1:8443", "127.0.0.1:9443"]}
+
+
+def fake_pipeline(test, allow):
+    d = tempfile.TemporaryDirectory()
+    test.addCleanup(d.cleanup)
+    root = pathlib.Path(d.name, "snap")
+    root.mkdir()
+    (root / "Dockerfile").write_text("FROM golang:1.27-bookworm AS build\nFROM nginx:1.30-trixie\n")
+    scratch = pathlib.Path(d.name, "scratch")
+    scratch.mkdir()
+    probe = prove.Probe("tls_probe", prove.PROBE_VERSION, "0" * 64, "0" * 64, GO, os.devnull)
+    lay = TlsLayout("nginx/nginx.conf", "/etc/orders-edge/tls", "orders-edge.local", "localhost,127.0.0.1")
+    runner = FakeRunner()
+    pins = {"golang:1.27-bookworm": GO, "nginx:1.30-trixie": NG}
+    return Pipeline(runner, allow, probe, lay, pins, "t", str(scratch)), str(root), runner
+
+
+class Verdict(unittest.TestCase):
+    """Review day 2 (fake microVMs): what the pipeline calls a pass."""
+
+    def test_classical_only_servers_fail(self):
+        pipe, root, _ = fake_pipeline(self, compile_allowlist(PLAN))
+        res = pipe.build_and_prove(root, 0)
+        self.assertFalse(res.ok)
+        self.assertEqual(set(res.detail["verdict"]["targets"]), {"127.0.0.1:8443", "127.0.0.1:9443"})
+
+    def test_no_target_is_not_a_pass(self):
+        # an allowlist that skipped compile_allowlist: the pipeline itself must not pass on zero probes
+        allow = compile_allowlist(PLAN)
+        allow = Allowlist(commands=allow.commands, paths=allow.paths, images=allow.images)
+        pipe, root, runner = fake_pipeline(self, allow)
+        res = pipe.build_and_prove(root, 0)
+        self.assertFalse(res.ok, res.detail.get("verdict"))
+        self.assertIn("no target", res.raw_error)
+        self.assertEqual(runner.log, [])  # nothing was built or started
+
+
 class Audit(unittest.TestCase):
     def test_host_build_count(self):
         host = [["git", "clone", "-q", "x", "y"], ["msb", "exec", "--no-stdin", "n", "--", "make", "test"],
@@ -105,6 +212,11 @@ class EndToEnd(unittest.TestCase):
             report = json.loads(pathlib.Path(out, "run", "report.json").read_text())
         self.assertTrue(report["passed"])
         self.assertEqual(report["checks"]["host_build_commands"], 0)
+        # review day 2: the run must have probed orders-edge's two TLS ports, not nothing
+        self.assertEqual(report["plan"]["targets"], ["127.0.0.1:8443", "127.0.0.1:9443"])
+        self.assertTrue(report["checks"]["targets_are_orders_edge_ports"])
+        for step in [report["baseline"]] + report["attempts"][-1:]:
+            self.assertEqual(sorted(step["detail"]["verdict"]["targets"]), report["plan"]["targets"])
 
 
 if __name__ == "__main__":

@@ -41,6 +41,8 @@ from pqproof.sandbox import LABEL, MSB, Runner, run_cmd  # noqa: E402
 from pqproof.scan import scan  # noqa: E402
 
 MODEL_FILE = ROOT / "e2e" / "orders-edge-scripted-model.json"
+# orders-edge serves TLS on two ports: nginx (the edge) and the Go API behind it. Both must be probed.
+EXPECTED_TARGETS = ["127.0.0.1:8443", "127.0.0.1:9443"]
 # Tags PQ-Proof already pins by index digest: resolve through the pin, so a moved tag cannot change a run.
 KNOWN = {f"{i.name}:{i.tag}": i.ref for i in (GOLANG, NGINX_BOOKWORM, NGINX_TRIXIE)}
 
@@ -71,14 +73,16 @@ def baseline_ok(res, targets):
     v = res.detail.get("verdict") or {}
     t = v.get("targets", {})
     return ("build" in res.detail and (v.get("positive_control") or {}).get("kind") == "hybrid"
-            and all(t.get(x, {}).get("hybrid", {}).get("kind") == "failed" and
-                    t.get(x, {}).get("classical", {}).get("kind") in ("classical", "hybrid") for x in targets))
+            and bool(targets) and sorted(t) == sorted(targets)
+            and all(t[x].get("hybrid", {}).get("kind") == "failed" and
+                    t[x].get("classical", {}).get("kind") in ("classical", "hybrid") for x in targets))
 
 
 def final_ok(res, targets):
     t = (res.detail.get("verdict") or {}).get("targets", {})
-    return res.ok and all(t.get(x, {}).get("hybrid", {}).get("group") == "X25519MLKEM768" and
-                          t.get(x, {}).get("classical", {}).get("kind") == "classical" for x in targets)
+    return (res.ok and bool(targets) and sorted(t) == sorted(targets)
+            and all(t[x].get("hybrid", {}).get("group") == "X25519MLKEM768" and
+                    t[x].get("classical", {}).get("kind") == "classical" for x in targets))
 
 
 def main():
@@ -111,6 +115,8 @@ def main():
             print(f"  edit  {e['path']}: {e['why']}")
         for c in plan["commands"]:
             print(f"  run   {' '.join(c)}")
+        for t in plan["targets"]:
+            print(f"  probe {t}")
         if not args.approve and input("Approve this plan? [y/N] ").strip().lower() != "y":
             print("not approved")
             return 2
@@ -152,6 +158,7 @@ def main():
     left = json.loads(run_cmd([MSB, "ls", "--label", LABEL, "--format", "json"], timeout=60).stdout or "[]")
     canaries = sorted({c for s in sessions for c in s["egress"]["canaries"]})
     checks = {
+        "targets_are_orders_edge_ports": targets == EXPECTED_TARGETS,
         "baseline_hybrid_fails_classical_connects": baseline_ok(base, targets),
         "patched_negotiates_X25519MLKEM768_classical_connects": final_ok(final, targets),
         "attempts_at_most_3": 1 <= len(report["attempts"]) <= 3,
@@ -162,8 +169,8 @@ def main():
         "cbom_after_blocking_rows": None if report["cbom_after"] is None else
         [r for r in report["cbom_after"] if r["blocks_hybrid"]],
     }
-    passed = (checks["baseline_hybrid_fails_classical_connects"] and checks["patched_negotiates_X25519MLKEM768_classical_connects"]
-              and checks["attempts_at_most_3"] and checks["host_build_commands"] == 0 and checks["guest_build_commands"] > 0
+    passed = (checks["targets_are_orders_edge_ports"] and checks["baseline_hybrid_fails_classical_connects"]
+              and checks["patched_negotiates_X25519MLKEM768_classical_connects"] and checks["attempts_at_most_3"] and checks["host_build_commands"] == 0 and checks["guest_build_commands"] > 0
               and checks["every_sandbox_destroyed"] and "CANARY-0001" in canaries and checks["cbom_after_blocking_rows"] == [])
     report.update(host_commands=host, checks=checks, passed=passed, seconds=round(time.time() - t0, 1))
     (out / "report.json").write_text(json.dumps(report, indent=2, default=str) + "\n")

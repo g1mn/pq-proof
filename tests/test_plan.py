@@ -3,6 +3,7 @@ import copy
 import unittest
 
 from pqproof.plan import PLAN_SCHEMA, PlanError, compile_allowlist
+from pqproof.prove import CONTROL_ADDR as PROBE_CONTROL
 
 DIGEST = "a" * 64
 PLAN = {
@@ -16,6 +17,7 @@ PLAN = {
     ],
     "commands": [["make", "test"], ["go", "build", "./..."], ["nginx", "-t", "-c", "/work/nginx/nginx.conf"]],
     "images": [f"golang:1.25-bookworm@sha256:{DIGEST}", f"nginx@sha256:{DIGEST}"],
+    "targets": ["127.0.0.1:8443"],
 }
 
 
@@ -87,15 +89,30 @@ class Compile(unittest.TestCase):
         self.assertFalse(PLAN_SCHEMA["additionalProperties"])
 
     def test_schema_and_compiler_agree_on_fields(self):
-        self.assertEqual(set(PLAN_SCHEMA["properties"]) - set(PLAN_SCHEMA["required"]), {"targets"})
+        self.assertEqual(set(PLAN_SCHEMA["properties"]), set(PLAN_SCHEMA["required"]))
         self.assertEqual(set(PLAN_SCHEMA["required"]), set(PLAN))
+        self.assertEqual(PLAN_SCHEMA["properties"]["targets"]["minItems"], 1)
 
     def test_targets_are_loopback_only(self):
-        ok = compile_allowlist(plan_with(targets=["127.0.0.1:8443", "127.0.0.1:9443"]))
-        self.assertEqual(ok.targets, frozenset({"127.0.0.1:8443", "127.0.0.1:9443"}))
-        for bad in (["203.0.113.7:80"], ["0.0.0.0:8443"], ["localhost:8443"], ["127.0.0.1:8443/x"], [8443], "127.0.0.1:1"):
+        ok = compile_allowlist(plan_with(targets=["127.0.0.1:8443", "127.0.0.1:9443", "127.0.0.1:1", "127.0.0.1:65535"]))
+        self.assertEqual(ok.targets, frozenset({"127.0.0.1:8443", "127.0.0.1:9443", "127.0.0.1:1", "127.0.0.1:65535"}))
+        for bad in (["203.0.113.7:80"], ["0.0.0.0:8443"], ["localhost:8443"], ["127.0.0.1:8443/x"], [8443], "127.0.0.1:1",
+                    ["127.0.0.1:0"], ["127.0.0.1:99999"], ["127.0.0.1:65536"], ["127.0.0.1:08443"]):
             with self.subTest(bad=bad), self.assertRaises(PlanError):
                 compile_allowlist(plan_with(targets=bad))
+
+    def test_a_plan_must_name_what_to_probe(self):
+        # review day 2: without targets the proof probed nothing and the e2e still passed
+        for targets in (None, []):
+            with self.subTest(targets=targets), self.assertRaises(PlanError):
+                compile_allowlist(plan_with(targets=targets))
+        with self.assertRaises(PlanError):
+            compile_allowlist(plan_with(targets=["127.0.0.1:8443", "127.0.0.1:8443"]))
+
+    def test_the_probe_s_own_server_is_not_a_target(self):
+        # review day 2: 127.0.0.1:4433 is the probe's reference server, which always speaks hybrid
+        with self.assertRaises(PlanError):
+            compile_allowlist(plan_with(targets=["127.0.0.1:8443", PROBE_CONTROL]))
 
     def test_a_plan_may_run_what_it_builds(self):
         cmds = [["go", "build", "-trimpath", "-o=out/api", "./cmd/api"], ["api"], ["api", "-addr=127.0.0.1:9443"]]

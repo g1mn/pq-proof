@@ -19,7 +19,7 @@ import tempfile
 from dataclasses import asdict, dataclass
 
 from .images import GOLANG
-from .plan import Allowlist
+from .plan import PROBE_ADDRS, Allowlist
 from .sandbox import Limits
 
 PROBE_NAME = "tls_probe"
@@ -33,6 +33,7 @@ HYBRID_GROUPS = ("X25519MLKEM768", "SecP256r1MLKEM768", "SecP384r1MLKEM1024")
 OFFER_HYBRID = "X25519MLKEM768"  # a client that only speaks hybrid: success means ML-KEM was negotiated
 OFFER_CLASSICAL = "X25519,P-256"  # a client from before ML-KEM
 CONTROL_ADDR = "127.0.0.1:4433"
+assert CONTROL_ADDR in PROBE_ADDRS  # plans may not name it as a target
 
 
 class ProveError(RuntimeError):

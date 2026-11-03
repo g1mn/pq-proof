@@ -17,7 +17,7 @@ from dataclasses import dataclass
 PLAN_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["version", "summary", "edits", "commands", "images"],
+    "required": ["version", "summary", "edits", "commands", "images", "targets"],
     "properties": {
         "version": {"const": 1},
         "summary": {"type": "string"},
@@ -27,8 +27,9 @@ PLAN_SCHEMA = {
         "commands": {"type": "array", "items": {
             "type": "array", "minItems": 1, "items": {"type": "string"}}},
         "images": {"type": "array", "items": {"type": "string"}},
-        # Optional: loopback addresses of the servers to probe inside the prove microVM.
-        "targets": {"type": "array", "items": {"type": "string"}},
+        # Loopback addresses of the servers to probe inside the prove microVM. At least one: a proof
+        # that probes nothing proves nothing.
+        "targets": {"type": "array", "minItems": 1, "items": {"type": "string"}},
     },
 }
 
@@ -43,7 +44,9 @@ GO_PACKAGE = r"\.(?:/[A-Za-z0-9_.-]+)*(?:/\.\.\.)?"  # ., ./..., ./cmd/api
 ABS_PATH = r"(?:/[A-Za-z0-9_.-]+)+"
 SEGMENT = r"[A-Za-z0-9_-][A-Za-z0-9_.-]*"  # never "." or "..", never hidden
 REL_OUT = rf"(?:{SEGMENT}/)*{SEGMENT}"  # go build -o=out/api: inside the work tree
-LOOPBACK = r"127\.0\.0\.1:[0-9]{1,5}"  # servers are probed inside their own microVM
+LOOPBACK = r"127\.0\.0\.1:[1-9][0-9]{0,4}"  # servers are probed inside their own microVM
+# tls_probe's own reference server (prove.CONTROL_ADDR) speaks hybrid by design: never a target.
+PROBE_ADDRS = frozenset({"127.0.0.1:4433"})
 PROGRAMS = {
     "make": (None, TARGET),
     "go": ("build|test|vet", rf"{GO_PACKAGE}|-v|-count=1|-mod=vendor|-trimpath|-o={REL_OUT}"),
@@ -130,6 +133,15 @@ def check_command(argv, built=frozenset()):
     return tuple(argv)
 
 
+def check_target(target):
+    """A server address inside the prove microVM: 127.0.0.1:PORT with PORT 1-65535, not the probe's own."""
+    if not isinstance(target, str) or not re.fullmatch(LOOPBACK, target) or int(target.rsplit(":", 1)[1]) > 65535:
+        raise PlanError(f"target must be a loopback address inside the microVM, 127.0.0.1:PORT (1-65535): {target!r}")
+    if target in PROBE_ADDRS:
+        raise PlanError(f"target {target} is the probe's own reference server, not a server of the repo")
+    return target
+
+
 def check_image(ref):
     m = IMAGE_RE.fullmatch(ref) if isinstance(ref, str) else None
     if not m:
@@ -181,18 +193,20 @@ def compile_allowlist(plan):
     if type(plan["version"]) is not int or plan["version"] != 1:  # rejects true, 1.0, "1"
         raise PlanError(f"unsupported plan version {plan['version']!r}")
     for key in ("edits", "commands", "images", "targets"):
-        if not isinstance(plan.get(key, []), list):
+        if not isinstance(plan[key], list):
             raise PlanError(f"{key} must be a list")
     paths = set()
     for edit in plan["edits"]:
         if not isinstance(edit, dict) or set(edit) != {"path", "why"}:
             raise PlanError(f"edit must have exactly 'path' and 'why': {edit!r}")
         paths.add(clean_path(edit["path"]))
-    for target in plan.get("targets", []):
-        if not isinstance(target, str) or not re.fullmatch(LOOPBACK, target):
-            raise PlanError(f"target must be a loopback address inside the microVM, 127.0.0.1:PORT: {target!r}")
+    targets = [check_target(t) for t in plan["targets"]]
+    if not targets:
+        raise PlanError("targets is empty: name at least one server address to probe")
+    if len(set(targets)) != len(targets):
+        raise PlanError(f"targets repeat an address: {targets}")
     built = built_programs(plan["commands"])
     return Allowlist(commands=frozenset(check_command(c, built) for c in plan["commands"]),
                      paths=frozenset(paths),
                      images=frozenset(check_image(i) for i in plan["images"]),
-                     targets=frozenset(plan.get("targets", [])))
+                     targets=frozenset(targets))
