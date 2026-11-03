@@ -71,7 +71,7 @@ class RunStep(unittest.TestCase):
         create, exec_, rm = res.host_commands
         self.assertEqual(create, ["msb", "create", "-q", "--name", f"pq-{int(T0)}-job1-build", "--cpus", "1",
                                   "--memory", "1024M", "--max-duration", "120s", "--label", LABEL,
-                                  "--pull", "never", "golang:1.25-bookworm"])
+                                  "--pull", "never", "--no-net", "golang:1.25-bookworm"])
         self.assertEqual(exec_, ["msb", "exec", "--no-stdin", res.name, "--", "make", "test"])
         self.assertEqual(rm, ["msb", "rm", "--force", "-q", res.name])
         self.assertEqual((res.exit_code, res.stdout, res.timed_out), (0, "ok\n", False))

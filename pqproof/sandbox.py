@@ -5,7 +5,8 @@ Three layers keep a step bounded and leave nothing behind:
 2. A host-side timeout on `msb exec`, then `msb rm --force` in a finally block.
 3. A reaper loop that removes any pqproof-labelled sandbox past its lifetime, so a crashed
    control plane cannot leave microVMs running.
-Every msb command line is kept in StepResult.host_commands for the receipt.
+Egress is denied for every step (see egress.py). Every msb command line is kept in
+StepResult.host_commands for the receipt.
 """
 import datetime
 import json
@@ -57,8 +58,12 @@ def _text(data):
 
 
 class Runner:
-    def __init__(self, msb=MSB, run=run_cmd, clock=time.time):
-        self.msb, self._run, self._clock = msb, run, clock
+    def __init__(self, msb=MSB, run=run_cmd, clock=time.time, egress=None):
+        self.msb, self._run, self._clock, self.egress = msb, run, clock, egress
+
+    def net_args(self):
+        """Network policy for every step: the sinkhole's (egress.Sinkhole), or deny everything."""
+        return self.egress.msb_args() if self.egress else ["--no-net"]
 
     def _msb(self, log, *args, timeout=60):
         argv = [self.msb, *args]
@@ -77,7 +82,7 @@ class Runner:
             r = self._msb(res.host_commands, "create", "-q", "--name", name,
                           "--cpus", str(limits.cpus), "--memory", f"{limits.memory_mib}M",
                           "--max-duration", f"{limits.wall_clock_s}s", "--label", LABEL,
-                          "--pull", "never", image)
+                          "--pull", "never", *self.net_args(), image)
             if r.returncode != 0:
                 raise SandboxError(f"msb create failed: {r.stderr.strip()[-300:]}")
             remaining = max(1.0, started + limits.wall_clock_s - self._clock())
