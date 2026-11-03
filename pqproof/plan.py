@@ -26,12 +26,20 @@ PLAN_SCHEMA = {
     },
 }
 
-# Programs that would escape the allowlist (a shell or wrapper runs anything) or talk to the network.
-DENIED_PROGRAMS = frozenset({
-    "sh", "bash", "dash", "ash", "zsh", "ksh", "fish", "env", "xargs", "sudo", "su", "nohup",
-    "curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "scp", "sftp", "telnet", "ftp", "git",
-})
-INLINE_CODE = {"python": "-c", "python3": "-c", "node": "-e", "perl": "-e", "ruby": "-e"}
+# The programs a plan may run, and what their arguments may look like: (pattern for the first
+# argument or None, pattern for every other argument). Anything else is refused, including flags
+# that run another program or inline code (go -exec/-toolexec, make --eval, -f and VAR=value,
+# nginx -g). This bounds what the model can ask for. It does not make the repo's own code safe:
+# `make test` runs Makefile recipes with /bin/sh and `go test` runs test code. That code runs only
+# inside the microVM, with egress denied.
+TARGET = r"[A-Za-z0-9][A-Za-z0-9_.-]*"
+GO_PACKAGE = r"\.(?:/[A-Za-z0-9_.-]+)*(?:/\.\.\.)?"  # ., ./..., ./cmd/api
+ABS_PATH = r"(?:/[A-Za-z0-9_.-]+)+"
+PROGRAMS = {
+    "make": (None, TARGET),
+    "go": ("build|test|vet", rf"{GO_PACKAGE}|-v|-count=1|-mod=vendor|-trimpath"),
+    "nginx": (None, rf"-t|-q|-c|-p|{ABS_PATH}"),
+}
 IMAGE_RE = re.compile(
     r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*"  # [registry/]repo path
     r"(?::(?P<tag>[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}))?"
@@ -63,10 +71,17 @@ def check_command(argv):
     prog = argv[0]
     if "/" in prog:
         raise PlanError(f"command must name a program, not a path: {prog!r}")
-    if prog in DENIED_PROGRAMS:
-        raise PlanError(f"program not allowed in a sandbox step: {prog!r}")
-    if INLINE_CODE.get(prog) in argv[1:]:
-        raise PlanError(f"inline code is not allowed: {' '.join(argv)!r}")
+    if prog not in PROGRAMS:
+        raise PlanError(f"program not allowed in a sandbox step: {prog!r} (allowed: {', '.join(PROGRAMS)})")
+    first, rest = PROGRAMS[prog]
+    args = argv[1:]
+    if first:
+        if not args or not re.fullmatch(first, args[0]):
+            raise PlanError(f"{prog} subcommand not allowed: {args[:1]!r} (allowed: {first})")
+        args = args[1:]
+    for arg in args:
+        if not re.fullmatch(rest, arg):
+            raise PlanError(f"argument not allowed for {prog}: {arg!r}")
     return tuple(argv)
 
 

