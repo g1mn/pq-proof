@@ -11,6 +11,7 @@ anything that leaves the snapshot root (or open it with O_NOFOLLOW).
 """
 import posixpath
 import re
+import unicodedata
 from dataclasses import dataclass
 
 # JSON Schema for the plan. Also sent as response_format json_schema when asking the model for a plan.
@@ -78,6 +79,23 @@ OFFICIAL = re.compile(r"(?:docker\.io/library/|library/)?[a-z0-9]+(?:[._-][a-z0-
 
 class PlanError(ValueError):
     pass
+
+
+SUMMARY_MAX, WHY_MAX = 500, 300
+# Control (escape sequences, CR, LF), format (bidi overrides, zero width), line and paragraph
+# separators, private use, surrogates and unassigned code points.
+UNPRINTABLE = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cs", "Cn"})
+
+
+def check_text(value, field, limit):
+    """Free text the approver reads (summary, why): one line of printable characters, bounded.
+    The approval screen prints it as is, so an escape sequence could hide the lines after it."""
+    if not isinstance(value, str) or len(value) > limit:
+        raise PlanError(f"{field} must be a string of at most {limit} characters")
+    bad = sorted({f"U+{ord(c):04X}" for c in value if unicodedata.category(c) in UNPRINTABLE})
+    if bad:
+        raise PlanError(f"{field} has characters that are not printable on one line: {', '.join(bad[:5])}")
+    return value
 
 
 def clean_path(path):
@@ -219,10 +237,12 @@ def compile_allowlist(plan):
     for key in ("edits", "commands", "images", "targets"):
         if not isinstance(plan[key], list):
             raise PlanError(f"{key} must be a list")
+    check_text(plan["summary"], "summary", SUMMARY_MAX)
     paths = set()
     for edit in plan["edits"]:
         if not isinstance(edit, dict) or set(edit) != {"path", "why"}:
             raise PlanError(f"edit must have exactly 'path' and 'why': {edit!r}")
+        check_text(edit["why"], "why", WHY_MAX)
         paths.add(clean_path(edit["path"]))
     built = built_programs(plan["commands"])
     targets = [check_target(t, built) for t in plan["targets"]]

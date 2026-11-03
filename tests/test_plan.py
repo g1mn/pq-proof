@@ -146,6 +146,25 @@ class Compile(unittest.TestCase):
                 compile_allowlist(plan_with(commands=bad))
 
 
+class ApprovalText(unittest.TestCase):
+    """Review day 2: the approval screen prints the model's summary and each edit's why as they
+    are, so terminal escapes could move the cursor and hide the image and command lines."""
+
+    def test_free_text_is_printable_and_bounded(self):
+        for bad in ("ok\x1b[1A\x1b[2K\r  image nginx:1.30-trixie -> (hidden)", "a\nb", "a\rb", "x\x00", "x\x7f", "x\x9b2K",
+                    "abc\u202edcba", "zero\u200bwidth", "line\u2028sep", "x" * 2001, 7, None):
+            with self.subTest(bad=repr(bad)[:40]):
+                with self.assertRaises(PlanError):
+                    compile_allowlist(plan_with(summary=bad))
+                if not (isinstance(bad, str) and len(bad) > 500):
+                    with self.assertRaises(PlanError):
+                        compile_allowlist(plan_with(edits=[{"path": "nginx/nginx.conf", "why": bad}]))
+        with self.assertRaises(PlanError):
+            compile_allowlist(plan_with(edits=[{"path": "nginx/nginx.conf", "why": "w" * 501}]))
+        ok = "Move to X25519MLKEM768 (hybrid ML-KEM) — keep P-256; café, Zürich, naïve."
+        compile_allowlist(plan_with(summary=ok, edits=[{"path": "nginx/nginx.conf", "why": ok}]))
+
+
 class Reject(unittest.TestCase):
     CASES = [
         ("egress hosts field", plan_with(egress_hosts=["proxy.golang.org"]), "unknown plan fields"),
