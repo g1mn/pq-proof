@@ -7,6 +7,8 @@ guests) and on the Vultr VX1 host (linux/amd64). Measured on macOS with msb 0.7.
 record that platform digest next to the index pin. The per-platform digests below come from
 Docker Hub's tag API on 2026-11-04; amd64 has not been pulled on a VX1 host yet.
 """
+import json
+import re
 from dataclasses import dataclass
 
 
@@ -37,3 +39,45 @@ NGINX_TRIXIE = Image("nginx", "1.30-trixie",
                      "sha256:66b50d24288dba67f3d000b31223daefc4868c58d29aaacb6a4ff9771597b5eb",
                      {"arm64": "sha256:0a63e6c31fb62d0647c8d37fa88219af4ecfc130639a36a4686634b15b606f29",
                       "amd64": "sha256:b565a9579cdabe43de09a5a278dc95ceee721dae1cacf85247effc4f6630d511"})
+
+
+@dataclass(frozen=True)
+class Resolved:
+    requested: str
+    pinned: str  # name:tag@sha256:<platform manifest digest>, what the approver sees and the allowlist holds
+    digest: str
+    architecture: str
+
+    def show(self):
+        return f"{self.requested} -> {self.pinned} (linux/{self.architecture})"
+
+
+def resolve(ref, run, msb="msb"):
+    """Turn an image the model named (name:tag) into name:tag@sha256:<digest> before approval.
+
+    The control plane pulls it (`msb pull`, on the host, never in a sandbox) and reads the digest
+    with `msb image inspect`, which reports this host's platform manifest. The same tag on the VX1
+    (amd64) gives a different digest than on a Mac (arm64). A ref that already carries a digest
+    (index or platform) is pulled by that digest, and the result names the platform digest msb
+    reports. run(argv, timeout) -> CompletedProcess, like sandbox.run_cmd.
+    """
+    from .plan import OFFICIAL, PlanError  # noqa: PLC0415 - plan imports nothing from here
+    base, _, want = ref.partition("@")
+    name, _, tag = base.partition(":")
+    if not tag or not OFFICIAL.fullmatch(name) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", tag) \
+            or tag == "latest" or (want and not re.fullmatch(r"sha256:[0-9a-f]{64}", want)):
+        raise PlanError(f"image must be a Docker Hub official name:tag (not latest), optionally @sha256: {ref!r}")
+    for argv in ([msb, "pull", "-q", ref], [msb, "image", "inspect", ref, "--format", "json"]):
+        r = run(argv, timeout=900)
+        if r.returncode != 0:
+            raise PlanError(f"{' '.join(argv[:3])} failed: {str(r.stderr).strip()[-300:]}")
+    info = json.loads(str(r.stdout))
+    digest, arch = info["digest"], info.get("architecture", "?")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise PlanError(f"msb reported no digest for {ref!r}")
+    pinned = f"{base}@{digest}"
+    if pinned != ref:  # cache it under the pinned name too (layers are already here, so no download)
+        r = run([msb, "pull", "-q", pinned], timeout=900)
+        if r.returncode != 0:
+            raise PlanError(f"msb pull {pinned} failed: {str(r.stderr).strip()[-300:]}")
+    return Resolved(requested=ref, pinned=pinned, digest=digest, architecture=arch)
