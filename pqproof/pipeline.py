@@ -8,6 +8,10 @@ Nothing from the repo runs on the host. The repo's Dockerfile is read, never bui
   program and tls_probe; it runs `nginx -t`, starts the probe's two reference servers, then the
   built program and nginx as background jobs; the probe must pass a positive and a negative
   control, then it probes every target twice (hybrid-only client, classical client).
+  The repo's servers run as unprivileged users (BUILT_USER, NGINX_USER: one uid each), so they
+  cannot replace the probe, which stays root-owned; the probe binary is copied back out and
+  hashed before the controls and after the last handshake. The control plane, as root, only
+  creates nginx's pid file and cache directory for NGINX_USER beforehand.
 Each step's raw output is what goes back to the model when it fails.
 """
 import hashlib
@@ -18,6 +22,7 @@ from dataclasses import dataclass
 
 from . import prove
 from .loop import BuildResult
+from .plan import Allowlist
 from .sandbox import Limits
 from .scan import dockerfile_images
 
@@ -26,6 +31,11 @@ GO_ENV = {"CGO_ENABLED": "0", "GOFLAGS": "-mod=vendor", "GOPROXY": "off", "GOTOO
 BUILD_LIMITS = Limits(cpus=2, memory_mib=2048, wall_clock_s=300)
 PROVE_LIMITS = Limits(cpus=1, memory_mib=1024, wall_clock_s=120)
 RAW_TAIL = 6000
+# The repo's servers never run as root in the prove microVM. Numeric ids, one per kind of server.
+NGINX_USER = "65534:65534"
+BUILT_USER = "65533:65533"
+NGINX_CACHE = "/var/cache/nginx"  # temp paths of the official nginx images
+GUEST_ABS = re.compile(r"(?:/(?!\.\.?(?:/|$))[A-Za-z0-9_.-]+)+")
 
 
 class PipelineError(RuntimeError):
@@ -51,6 +61,7 @@ class Layout:
     tls_dir: str  # where the config expects cert.pem, key.pem and ca.pem
     servername: str
     hosts: str  # names and IPs for the test certificate
+    pid: str  # nginx's pid file, created for NGINX_USER before nginx starts
 
 
 def tls_layout(root, nginx_conf="nginx/nginx.conf"):
@@ -68,8 +79,19 @@ def tls_layout(root, nginx_conf="nginx/nginx.conf"):
     server = re.search(r"^\s*server_name\s+([A-Za-z0-9.-]+)", text, re.M)
     servername = server[1] if server else "localhost"
     hosts = ["localhost", "127.0.0.1", servername] + re.findall(r"^\s*proxy_ssl_name\s+([A-Za-z0-9.-]+);", text, re.M)
+    pid = re.search(r"^\s*pid\s+(\S+);", text, re.M)
+    if not pid or not GUEST_ABS.fullmatch(pid[1]):
+        raise PipelineError("the prove step runs nginx as an unprivileged user and creates its pid file first: "
+                            f"it needs a `pid /absolute/path;` directive, found {pid[1] if pid else 'none'!r}")
     return Layout(nginx_conf=nginx_conf, tls_dir=dirs.pop(), servername=servername,
-                  hosts=",".join(dict.fromkeys(hosts)))
+                  hosts=",".join(dict.fromkeys(hosts)), pid=pid[1])
+
+
+def nginx_prep(layout):
+    """The control plane's fixed root commands that let nginx run as NGINX_USER."""
+    uid, gid = NGINX_USER.split(":")
+    return [("install", "-d", "-o", uid, "-g", gid, "-m", "0755", NGINX_CACHE),
+            ("install", "-o", uid, "-g", gid, "-m", "0644", "/dev/null", layout.pid)]
 
 
 def stage_images(root, allow, pins):
@@ -158,6 +180,7 @@ class Pipeline:
         # prove: runtime image, probe, reference servers, the repo's servers, both controls, every target
         lay = self.layout
         allow = self.allow.union(prove.probe_allowlist(sorted(self.allow.targets), lay.tls_dir, lay.servername, lay.hosts))
+        allow = allow.union(Allowlist(commands=frozenset(nginx_prep(lay)), paths=frozenset(), images=frozenset()))
         conf = f"{SRC}/{lay.nginx_conf}"
         verdict = {"positive_control": None, "negative_control": None, "targets": {}}
         invalid = None
@@ -166,20 +189,26 @@ class Pipeline:
             for path in binaries:
                 s.copy_in(path, f"/usr/local/bin/{os.path.basename(path)}")
             verdict["probe"] = prove.install_probe(s, self.probe, lay.tls_dir, lay.hosts)
-            e = s.exec(["nginx", "-t", "-c", conf])
+            for argv in nginx_prep(lay):
+                e = s.exec(list(argv))
+                if e.exit_code != 0:
+                    failed = failed or e
+            e = failed or s.exec(["nginx", "-t", "-c", conf], user=NGINX_USER)
             if e.exit_code != 0:
                 failed = e
             else:
                 prove.start_references(s, lay.tls_dir)  # before any repo server can take their ports
                 for path in binaries:  # the plan says whether to run what it built
                     if self.allow.allows_command([os.path.basename(path)]):
-                        s.start([os.path.basename(path)])
-                s.start(["nginx", "-c", conf])
-                ctl = prove.controls(s, lay.tls_dir)
-                verdict["positive_control"] = _hs(ctl["positive"][0])
-                verdict["negative_control"] = {"hybrid": _hs(ctl["negative_hybrid"][0]),
-                                               "classical": _hs(ctl["negative_classical"][0])}
-                invalid = prove.control_problem(ctl)
+                        s.start([os.path.basename(path)], user=BUILT_USER)
+                s.start(["nginx", "-c", conf], user=NGINX_USER)
+                invalid = prove.verify_probe(s, self.probe, os.path.join(out_dir, "probe-before"))
+                if not invalid:
+                    ctl = prove.controls(s, lay.tls_dir)
+                    verdict["positive_control"] = _hs(ctl["positive"][0])
+                    verdict["negative_control"] = {"hybrid": _hs(ctl["negative_hybrid"][0]),
+                                                   "classical": _hs(ctl["negative_classical"][0])}
+                    invalid = prove.control_problem(ctl)
                 for target in [] if invalid else sorted(self.allow.targets):
                     res = prove.probe_target(s, target, lay.tls_dir, lay.servername)
                     verdict["targets"][target] = {k: {"kind": h.kind, "group": h.group, "error": h.error,
@@ -188,6 +217,8 @@ class Pipeline:
                         failed = res["hybrid"][1]
                     elif failed is None and not res["classical"][0].ok:
                         failed = res["classical"][1]
+                if not invalid:
+                    invalid = prove.verify_probe(s, self.probe, os.path.join(out_dir, "probe-after"))
         detail["prove"] = _session_record(s, self.sinkhole)
         detail["verdict"] = verdict
         if invalid:

@@ -1,13 +1,18 @@
-"""Deterministic TLS proof with a fixed-version probe and a positive control.
+"""Deterministic TLS proof with a fixed-version probe, a positive and a negative control.
 
 The probe is tls_probe (probe/tls_probe.go): a static Go client built once inside a microVM from
 a pinned golang image and copied into every microVM that is tested. A client from the target's
 own image would not do: orders-edge's image has OpenSSL 3.0, which does not know the name
 X25519MLKEM768, so a red baseline would say nothing about the server. Before a server is judged,
 the same probe must negotiate X25519MLKEM768 with its own reference server in the same microVM
-(the positive control). Success is read from the probe's output, never from a model. The same probe must also fail to connect, offering
-only X25519MLKEM768, to a classical-only reference server (the negative control): a probe that
-always reports hybrid, for instance one that code in the microVM replaced with a script, fails it.
+(the positive control), and must fail to connect, offering only X25519MLKEM768, to a
+classical-only reference server (the negative control): a probe that always reports hybrid, for
+instance one that code in the microVM replaced with a script, fails it. Success is read from the
+probe's output, never from a model.
+
+The probe and its reference servers run as root and the probe binary is root-owned; the repo's
+servers run as unprivileged users (pipeline.py), so they cannot replace it. The binary is also
+copied back out and hashed on the host before the controls and after the last handshake.
 
 parse() also reads `openssl s_client` output, so an OpenSSL 3.5+ client can cross-check:
 - hybrid: "Negotiated TLS1.3 group: X25519MLKEM768"
@@ -15,6 +20,7 @@ parse() also reads `openssl s_client` output, so an OpenSSL 3.5+ client can cros
 - failed: "Cipher is (NONE)" with an alert; its "Negotiated TLS1.3 group NID: 0" is not a group.
 """
 import hashlib
+import os
 import pathlib
 import re
 import tempfile
@@ -25,7 +31,7 @@ from .plan import PROBE_ADDRS, Allowlist
 from .sandbox import Limits
 
 PROBE_NAME = "tls_probe"
-PROBE_VERSION = "0.1.0"
+PROBE_VERSION = "0.2.0"
 PROBE_SRC = pathlib.Path(__file__).resolve().parent.parent / "probe"
 GUEST_PROBE = "/usr/local/bin/tls_probe"
 GUEST_SRC = "/work/probe"
@@ -168,6 +174,20 @@ def install_probe(session, probe, tls_dir, hosts="localhost,127.0.0.1"):
     if c.exit_code != 0:
         raise ProveError(f"probe could not write test certificates: {c.stderr[-500:]}")
     return str(v.stdout).strip()
+
+
+def verify_probe(session, probe, dest_dir):
+    """None if the probe in the microVM is still the binary PQ-Proof built, else why not. The file
+    is copied out and hashed on the host, so no tool inside the microVM takes part."""
+    os.makedirs(dest_dir)
+    try:
+        data = pathlib.Path(session.copy_out(GUEST_PROBE, dest_dir)).read_bytes()
+    except (OSError, RuntimeError) as e:
+        return f"{GUEST_PROBE} could not be read back from the microVM: {e}"
+    got = hashlib.sha256(data).hexdigest()
+    if got != probe.sha256:
+        return f"{GUEST_PROBE} changed in the microVM (sha256 {got}, built {probe.sha256}, {len(data)} bytes)"
+    return None
 
 
 def start_references(session, tls_dir):

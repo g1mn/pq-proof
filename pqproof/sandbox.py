@@ -137,6 +137,7 @@ def _as_captured(data):
 
 GUEST_PATH = re.compile(r"(?:/(?!\.\.?(?:/|$))[A-Za-z0-9_.-]+)+")  # no "." or ".." segments
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+GUEST_USER = re.compile(r"[0-9]{1,5}:[0-9]{1,5}")  # numeric uid:gid, so the guest's /etc/passwd does not matter
 
 
 @dataclass
@@ -194,10 +195,14 @@ class Session:
     def remaining(self):
         return max(1.0, self.started_at + self.limits.wall_clock_s - self.runner._clock())
 
-    def _check(self, argv, env, workdir):
+    def _check(self, argv, env, workdir, user=None):
         if not self.allow.allows_command(argv):
             raise SandboxError(f"command is not in the approved allowlist: {list(argv)!r}")
         opts = []
+        if user is not None:
+            if not isinstance(user, str) or not GUEST_USER.fullmatch(user):
+                raise SandboxError(f"guest user must be numeric uid:gid: {user!r}")
+            opts += ["-u", user]
         for k, v in (env or {}).items():
             if not ENV_NAME.fullmatch(k) or not re.fullmatch(r"[A-Za-z0-9_.,:/=-]*", v):
                 raise SandboxError(f"environment entry not allowed: {k!r}")
@@ -208,9 +213,10 @@ class Session:
             opts += ["-w", workdir]
         return opts
 
-    def exec(self, argv, env=None, workdir=None):
-        """Run argv to completion inside the microVM. Returns Exec (also kept in self.execs)."""
-        opts = self._check(argv, env, workdir)
+    def exec(self, argv, env=None, workdir=None, user=None):
+        """Run argv to completion inside the microVM (as root, or as user "uid:gid").
+        Returns Exec (also kept in self.execs)."""
+        opts = self._check(argv, env, workdir, user)
         try:
             r = self.runner._msb(self.host_commands, "exec", "--no-stdin", *opts, self.name, "--", *argv,
                                  timeout=self.remaining() + GRACE_S)
@@ -220,10 +226,10 @@ class Session:
         self.execs.append(res)
         return res
 
-    def start(self, argv, env=None, workdir=None):
-        """Start argv as a background job inside the microVM (msb exec -d). Returns the job id.
-        The job ends with the microVM."""
-        opts = self._check(argv, env, workdir)
+    def start(self, argv, env=None, workdir=None, user=None):
+        """Start argv as a background job inside the microVM (msb exec -d), as root or as user
+        "uid:gid". Returns the job id. The job ends with the microVM."""
+        opts = self._check(argv, env, workdir, user)
         r = self.runner._msb(self.host_commands, "exec", "-d", *opts, self.name, "--", *argv)
         if r.returncode != 0:
             raise SandboxError(f"msb exec -d failed: {r.stderr.strip()[-300:]}")

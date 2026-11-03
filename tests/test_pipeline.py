@@ -1,17 +1,24 @@
 """pipeline: where TLS files go, which images build and run, and the host-build audit.
 The whole pipeline runs for real in e2e/orders_edge.py; set PQPROOF_E2E_REPO to an orders-edge
 checkout to run it from here (about 75 s on an M-series Mac, needs the pinned images cached)."""
+import hashlib
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 
 from pqproof import prove
+from helpers import msb_available
+from pqproof import pipeline
+from pqproof.images import GOLANG, NGINX_BOOKWORM, NGINX_TRIXIE
+from pqproof.loop import apply_edits
 from pqproof.pipeline import Layout as TlsLayout, Pipeline, PipelineError, guest_commands, host_build_count, stage_images, \
     tls_layout
+from pqproof.sandbox import Runner
 from pqproof.plan import Allowlist, compile_allowlist
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -29,6 +36,19 @@ class Layout(unittest.TestCase):
         lay = tls_layout(F1)
         self.assertEqual((lay.tls_dir, lay.servername), ("/etc/orders-edge/tls", "orders-edge.local"))
         self.assertEqual(lay.hosts, "localhost,127.0.0.1,orders-edge.local,orders-api.internal")
+        self.assertEqual(lay.pid, "/run/orders-edge-nginx.pid")
+
+    def test_needs_an_absolute_pid_path(self):
+        # nginx runs as an unprivileged user, so the control plane creates its pid file first
+        conf = (F1 / "nginx" / "nginx.conf").read_text()
+        for bad in (conf.replace("pid /run/orders-edge-nginx.pid;\n", ""),
+                    conf.replace("pid /run/orders-edge-nginx.pid;", "pid nginx.pid;"),
+                    conf.replace("pid /run/orders-edge-nginx.pid;", "pid /run/../etc/x;")):
+            with tempfile.TemporaryDirectory() as d:
+                pathlib.Path(d, "nginx").mkdir()
+                pathlib.Path(d, "nginx", "nginx.conf").write_text(bad)
+                with self.subTest(conf=bad[:80]), self.assertRaises(PipelineError):
+                    tls_layout(d)
 
     def test_needs_one_directory_with_the_probe_file_names(self):
         with tempfile.TemporaryDirectory() as d:
@@ -111,7 +131,7 @@ class FakeSession:
 
     def copy_out(self, src, dest_dir):
         path = os.path.join(dest_dir, src.rsplit("/", 1)[-1])
-        pathlib.Path(path).write_bytes(b"built")
+        pathlib.Path(path).write_bytes(self.runner.probe_bytes if src == prove.GUEST_PROBE else b"built")
         return path
 
     def start(self, argv, **kw):
@@ -133,8 +153,8 @@ class FakeSession:
 
 
 class FakeRunner:
-    def __init__(self, answer=None):
-        self.log = []
+    def __init__(self, answer=None, probe_bytes=b""):
+        self.log, self.probe_bytes = [], probe_bytes
         if answer:
             self.answer = answer
 
@@ -175,8 +195,8 @@ def fake_pipeline(test, allow, runner=None):
     (root / "Dockerfile").write_text("FROM golang:1.27-bookworm AS build\nFROM nginx:1.30-trixie\n")
     scratch = pathlib.Path(d.name, "scratch")
     scratch.mkdir()
-    probe = prove.Probe("tls_probe", prove.PROBE_VERSION, "0" * 64, "0" * 64, GO, os.devnull)
-    lay = TlsLayout("nginx/nginx.conf", "/etc/orders-edge/tls", "orders-edge.local", "localhost,127.0.0.1")
+    probe = prove.Probe("tls_probe", prove.PROBE_VERSION, hashlib.sha256(b"").hexdigest(), "0" * 64, GO, os.devnull)
+    lay = TlsLayout("nginx/nginx.conf", "/etc/orders-edge/tls", "orders-edge.local", "localhost,127.0.0.1", "/run/x.pid")
     runner = runner or FakeRunner()
     pins = {"golang:1.27-bookworm": GO, "nginx:1.30-trixie": NG}
     return Pipeline(runner, allow, probe, lay, pins, "t", str(scratch)), str(root), runner
@@ -223,12 +243,112 @@ class Verdict(unittest.TestCase):
         self.assertEqual((neg["hybrid"]["kind"], neg["classical"]["kind"], neg["classical"]["group"]),
                          ("failed", "classical", "X25519"))
 
+    def test_the_repo_s_servers_run_unprivileged(self):
+        # review day 2 (S5): the API ran as root and replaced /usr/local/bin/tls_probe
+        pipe, root, runner = fake_pipeline(self, compile_allowlist(PLAN))
+        pipe.build_and_prove(root, 0)
+        starts = {e[1][0]: e[2].get("user") for e in runner.log if e[0] == "start" and e[1][0] != "tls_probe"}
+        self.assertEqual(starts, {"api": pipeline.BUILT_USER, "nginx": pipeline.NGINX_USER})
+        self.assertNotEqual(pipeline.BUILT_USER, pipeline.NGINX_USER)
+        self.assertTrue(all(not u.startswith("0:") for u in starts.values()))
+        nginx_t = [e for e in runner.log if e[0] == "exec" and e[1][:2] == ["nginx", "-t"]]
+        self.assertEqual(nginx_t[0][2].get("user"), pipeline.NGINX_USER)
+        # the control plane prepares the pid file and cache directory as root, before nginx -t
+        execs = [e[1] for e in runner.log if e[0] == "exec"]
+        prep = [a for a in execs if a[0] == "install"]
+        self.assertEqual(len(prep), 2)
+        self.assertLess(execs.index(prep[-1]), execs.index(nginx_t[0][1]))
+        self.assertTrue(all(not e[2].get("user") for e in runner.log if e[0] == "exec" and e[1][0] in ("install", "tls_probe")))
+
+    def test_a_changed_probe_binary_invalidates_the_proof(self):
+        FakeRunner.hybrid_servers = True
+        self.addCleanup(setattr, FakeRunner, "hybrid_servers", False)
+        pipe, root, _ = fake_pipeline(self, compile_allowlist(PLAN), FakeRunner(probe_bytes=b"#!/bin/sh\n"))
+        res = pipe.build_and_prove(root, 0)
+        self.assertFalse(res.ok)
+        self.assertIn("proof invalid", res.raw_error)
+        self.assertIn("/usr/local/bin/tls_probe changed", res.raw_error)
+
     def test_hybrid_servers_pass(self):
         FakeRunner.hybrid_servers = True
         self.addCleanup(setattr, FakeRunner, "hybrid_servers", False)
         pipe, root, _ = fake_pipeline(self, compile_allowlist(PLAN))
         res = pipe.build_and_prove(root, 0)
         self.assertTrue(res.ok, res.raw_error)
+
+
+# Review day 2, S5: one edit in an approved file (internal/tlsconf/tlsconf.go) adds an init() to the
+# API that replaces the probe in the prove microVM with a script that always reports hybrid.
+FORGE_INIT = """
+const fakeProbe = `#!/bin/sh
+case "$1" in
+version) echo "tls_probe 0.2.0 (go1.27.3)" ;;
+serve) exec sleep 600 ;;
+connect) echo "result: connected"; echo "protocol: TLS 1.3"
+  case "$*" in *MLKEM*) echo "group: X25519MLKEM768" ;; *) echo "group: X25519" ;; esac ;;
+esac
+`
+
+func init() {
+\tif filepath.Base(os.Args[0]) != "api" {
+\t\treturn
+\t}
+\ttmp := "/usr/local/bin/.tls_probe.tmp"
+\tif err := os.WriteFile(tmp, []byte(fakeProbe), 0o755); err == nil {
+\t\t_ = os.Rename(tmp, "/usr/local/bin/tls_probe")
+\t}
+}
+"""
+FORGE_EDIT = {"path": "internal/tlsconf/tlsconf.go", "old": 'import "crypto/tls"\n',
+              "new": 'import (\n\t"crypto/tls"\n\t"os"\n\t"path/filepath"\n)\n' + FORGE_INIT}
+
+
+def orders_edge_snapshot(test):
+    """A copy of PQPROOF_E2E_REPO's HEAD without .git, as the e2e run takes it."""
+    d = tempfile.TemporaryDirectory(prefix="pqproof-t-")
+    test.addCleanup(d.cleanup)
+    clone = os.path.join(d.name, "clone")
+    subprocess.run(["git", "clone", "-q", "--no-recurse-submodules", os.environ["PQPROOF_E2E_REPO"], clone], check=True)
+    snap = os.path.join(d.name, "snap")
+    shutil.copytree(clone, snap, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+    return d.name, snap
+
+
+@unittest.skipUnless(os.environ.get("PQPROOF_E2E_REPO") and msb_available(),
+                     "set PQPROOF_E2E_REPO to an orders-edge checkout and install msb")
+class RealAttacks(unittest.TestCase):
+    """Review day 2's attacks on the proof, in real microVMs on orders-edge (about 30 s each)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.runner = Runner()
+        cls.probe = prove.build_probe(cls.runner, cls.tmp.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def prove_with(self, edits):
+        plan = json.loads((ROOT / "e2e" / "orders-edge-scripted-model.json").read_text())["plan"]
+        pins = {f"{i.name}:{i.tag}": i.ref for i in (GOLANG, NGINX_BOOKWORM, NGINX_TRIXIE)}
+        plan["images"] = [pins[i] for i in plan["images"]]
+        allow = compile_allowlist(plan)
+        scratch, snap = orders_edge_snapshot(self)
+        apply_edits(snap, edits, allow)
+        pipe = Pipeline(self.runner, allow, self.probe, tls_layout(snap), pins, "t", scratch)
+        return pipe.build_and_prove(snap, 7)
+
+    def test_the_api_cannot_replace_the_probe(self):
+        res = self.prove_with([FORGE_EDIT])
+        v = res.detail["verdict"]
+        self.assertFalse(res.ok)
+        self.assertNotIn("proof invalid", res.raw_error)  # the probe was never replaced
+        self.assertEqual((v["negative_control"]["hybrid"]["kind"], v["positive_control"]["kind"]), ("failed", "hybrid"))
+        for target in ("127.0.0.1:8443", "127.0.0.1:9443"):  # the real probe judged the real P-256 servers
+            self.assertEqual(v["targets"][target]["hybrid"]["kind"], "failed")
+            self.assertEqual(v["targets"][target]["classical"]["group"], "P-256")
+        self.assertIsNotNone(res.detail["prove"]["destroyed_at"])
 
 
 class Audit(unittest.TestCase):

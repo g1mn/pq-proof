@@ -5,7 +5,7 @@
 // old client that does not know the group's name.
 //
 //	tls_probe version
-//	tls_probe cert -hosts=localhost,127.0.0.1 DIR      writes DIR/ca.pem, DIR/cert.pem, DIR/key.pem
+//	tls_probe cert -hosts=localhost,127.0.0.1 DIR      writes DIR/ca.pem, DIR/cert.pem, DIR/key.pem (mode 0644)
 //	tls_probe serve -addr=127.0.0.1:4433 -groups=X25519MLKEM768,X25519 -cert=PATH -key=PATH
 //	tls_probe connect -groups=X25519MLKEM768 -ca=PATH -servername=NAME [-wait=10s] HOST:PORT
 //
@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 var groupNames = map[string]tls.CurveID{
 	"X25519MLKEM768":     tls.X25519MLKEM768,
@@ -133,12 +133,18 @@ func cert(args []string) error {
 	if err != nil {
 		return err
 	}
+	// World-readable on purpose: this is throwaway test material for one microVM, and the servers
+	// under test run as unprivileged users that must read it. Only root can change it.
 	for name, block := range map[string]*pem.Block{
 		"ca.pem":   {Type: "CERTIFICATE", Bytes: caDER},
 		"cert.pem": {Type: "CERTIFICATE", Bytes: leafDER},
 		"key.pem":  {Type: "PRIVATE KEY", Bytes: keyDER},
 	} {
-		if err := os.WriteFile(filepath.Join(dir, name), pem.EncodeToMemory(block), 0o600); err != nil {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o644); err != nil {
+			return err
+		}
+		if err := os.Chmod(path, 0o644); err != nil { // WriteFile's mode is cut by the umask
 			return err
 		}
 	}

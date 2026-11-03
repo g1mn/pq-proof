@@ -70,6 +70,18 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(s.host_commands[-1], ["msb", "rm", "--force", "-q", n])
         self.assertIsNotNone(s.destroyed_at)
 
+    def test_run_as_a_guest_user(self):
+        msb = FakeMsb()
+        with Runner(msb="msb", run=msb).session(self.allow, "job1", "prove", IMG) as s:
+            s.exec(["make", "test"], user="65534:65534")
+            s.start(["make", "test"], user="65533:65533")
+            for bad in ("root", "0", "65534", "1:2:3", "-1:0", "65534:65534 ", "--privileged"):
+                with self.subTest(user=bad), self.assertRaises(SandboxError):
+                    s.exec(["make", "test"], user=bad)
+        execs = [c for c in msb.calls if c[1] == "exec"]
+        self.assertEqual(execs[0][:6], ["msb", "exec", "--no-stdin", "-u", "65534:65534", s.name])
+        self.assertEqual(execs[1][:5], ["msb", "exec", "-d", "-u", "65533:65533"])
+
     def test_refuses_what_the_allowlist_does_not_hold(self):
         msb = FakeMsb()
         with Runner(msb="msb", run=msb).session(self.allow, "j", "s", IMG) as s:
