@@ -65,9 +65,9 @@ class SinkholeUnit(unittest.TestCase):
             c.recv(100)
             try:
                 c.sendall(b"x" * (256 * 1024))
-            except OSError:  # the sinkhole may close once it has enough
+                c.shutdown(socket.SHUT_WR)
+            except OSError:  # the sinkhole may close first, once it has read enough
                 pass
-            c.shutdown(socket.SHUT_WR)
             self.assertTrue(wait_for(lambda: sink.events))
             self.assertLessEqual(sink.events[0]["bytes"], 64 * 1024 + 4096)
 
