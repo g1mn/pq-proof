@@ -4,7 +4,8 @@ Microsandbox checks guest traffic in a user-space network stack on the host, so 
 is set with msb flags rather than host firewall rules:
 - `--no-net`: deny everything in both directions (the host and private ranges are denied too).
 - DNS: allowed only to the gateway, which forwards to the sinkhole's resolver. It logs every
-  query name and answers NXDOMAIN, so nothing reaches a real resolver.
+  query name it receives, over UDP and over TCP (msb forwards guest TCP/53 to the same port
+  number over TCP), and answers NXDOMAIN, so nothing reaches a real resolver.
 - TCP to 203.0.113.0/24 (RFC 5737 TEST-NET-3, never routed) is the only other allowed
   destination, and `--proxy` sends it to the sinkhole's HTTP CONNECT listener, which logs the
   destination and the bytes. Plain HTTP shows the payload; HTTPS shows only a ClientHello.
@@ -36,12 +37,21 @@ class Sinkhole:
         self._lock, self._socks, self._slots = threading.Lock(), [], threading.BoundedSemaphore(MAX_CONNS)
 
     def start(self):
+        for _ in range(20):  # DNS needs the same port number on UDP and TCP
+            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp.bind((self.host, 0))
+            try:
+                dns_tcp = socket.create_server((self.host, udp.getsockname()[1]))
+                break
+            except OSError:
+                udp.close()
+        else:
+            raise OSError("no port number free for DNS on both UDP and TCP")
         tcp = socket.create_server((self.host, 0))
-        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        udp.bind((self.host, 0))
-        self._socks = [tcp, udp]
+        self._socks = [tcp, dns_tcp, udp]
         self.tcp_port, self.dns_port = tcp.getsockname()[1], udp.getsockname()[1]
-        threading.Thread(target=self._accept, args=(tcp,), daemon=True).start()
+        threading.Thread(target=self._accept, args=(tcp, self._tcp), daemon=True).start()
+        threading.Thread(target=self._accept, args=(dns_tcp, self._dns_tcp), daemon=True).start()
         threading.Thread(target=self._dns, args=(udp,), daemon=True).start()
         return self
 
@@ -83,7 +93,7 @@ class Sinkhole:
             else:
                 self.dropped += 1
 
-    def _accept(self, srv):
+    def _accept(self, srv, handle):
         while True:
             try:
                 conn, _ = srv.accept()
@@ -94,7 +104,7 @@ class Sinkhole:
                 with self._lock:
                     self.dropped += 1
                 continue
-            threading.Thread(target=self._tcp, args=(conn,), daemon=True).start()
+            threading.Thread(target=handle, args=(conn,), daemon=True).start()
 
     def _tcp(self, conn):
         conn.settimeout(self.read_timeout)
@@ -121,7 +131,7 @@ class Sinkhole:
                     pass
             else:
                 payload = data
-            self._record(kind="tcp", dest=dest or request, bytes=len(payload),
+            self._record(kind="tcp", proto="tcp", dest=dest or request, bytes=len(payload),
                          sha256=hashlib.sha256(payload).hexdigest(),
                          canaries=[c.decode() for c in CANARY_RE.findall(payload)],
                          preview=payload[:200].decode(errors="replace"))
@@ -140,10 +150,38 @@ class Sinkhole:
             reply, qname = nxdomain(query)
             if reply is None:
                 continue
-            self._record(kind="dns", dest=qname, bytes=len(query), sha256=hashlib.sha256(query).hexdigest(),
-                         canaries=[c.decode() for c in CANARY_RE.findall(qname.upper().encode())],
-                         preview=qname)
+            self._record_dns(query, qname, "udp")
             udp.sendto(reply, addr)
+
+    def _dns_tcp(self, conn):
+        """DNS over TCP: each message has a 2-byte length prefix. Same answer and record as UDP."""
+        conn.settimeout(self.read_timeout)
+        try:
+            while (head := _recv_exact(conn, 2)) and (query := _recv_exact(conn, struct.unpack(">H", head)[0])):
+                reply, qname = nxdomain(query)
+                if reply is None:
+                    break
+                self._record_dns(query, qname, "tcp")
+                conn.sendall(struct.pack(">H", len(reply)) + reply)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+            self._slots.release()
+
+    def _record_dns(self, query, qname, proto):
+        self._record(kind="dns", proto=proto, dest=qname, bytes=len(query), sha256=hashlib.sha256(query).hexdigest(),
+                     canaries=[c.decode() for c in CANARY_RE.findall(qname.upper().encode())], preview=qname)
+
+
+def _recv_exact(conn, n):
+    data = b""
+    while len(data) < n:
+        chunk = conn.recv(n - len(data))
+        if not chunk:
+            return None
+        data += chunk
+    return data
 
 
 def nxdomain(query):

