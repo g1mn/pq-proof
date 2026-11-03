@@ -171,10 +171,13 @@ def main():
         "canaries_in_sinkhole": canaries,
         "cbom_after_blocking_rows": None if report["cbom_after"] is None else
         [r for r in report["cbom_after"] if r["blocks_hybrid"]],
+        # a runtime image the CBOM cannot place is not a clean bill either
+        "cbom_after_unknown_rows": None if report["cbom_after"] is None else
+        [r for r in report["cbom_after"] if r["blocks_hybrid"] is None],
     }
     passed = (checks["targets_are_orders_edge_ports"] and checks["baseline_hybrid_fails_classical_connects"]
               and checks["patched_negotiates_X25519MLKEM768_classical_connects"] and checks["attempts_at_most_3"] and checks["host_build_commands"] == 0 and checks["guest_build_commands"] > 0
-              and checks["every_sandbox_destroyed"] and "CANARY-0001" in canaries and checks["cbom_after_blocking_rows"] == [])
+              and checks["every_sandbox_destroyed"] and "CANARY-0001" in canaries and checks["cbom_after_blocking_rows"] == [] and checks["cbom_after_unknown_rows"] == [])
     report.update(host_commands=host, checks=checks, passed=passed, seconds=round(time.time() - t0, 1))
     (out / "report.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
     print(json.dumps(checks, indent=2))
