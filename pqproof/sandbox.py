@@ -51,8 +51,16 @@ class StepResult:
     host_commands: list = field(default_factory=list)
 
 
+def msb_env():
+    """PATH, HOME and msb's own MSB_* settings. msb passes its environment on to each sandbox's
+    VMM process, which lives as long as the microVM, so control-plane secrets such as the
+    inference API key must not be in it."""
+    return {k: v for k, v in os.environ.items() if k in ("PATH", "HOME") or k.startswith("MSB_")}
+
+
 def run_cmd(argv, timeout=None):
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+                          env=msb_env())
 
 
 def _text(data):

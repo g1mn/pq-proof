@@ -16,7 +16,7 @@ import time
 import unittest
 
 from helpers import allow, msb_available, pinned
-from pqproof.sandbox import LABEL, MSB, Limits, Runner, SandboxError
+from pqproof.sandbox import LABEL, MSB, Limits, Runner, SandboxError, run_cmd
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 T0 = 1_793_718_000.0  # 2026-11-03T16:20:00Z
@@ -154,6 +154,25 @@ class RunStep(unittest.TestCase):
         self.assertEqual(create[-2:], ["--", image])
 
 
+class Environment(unittest.TestCase):
+    """msb hands its environment to each sandbox's VMM process; the API key must not be in it."""
+
+    def test_msb_gets_no_control_plane_secrets(self):
+        fake = "pqproof-test-not-a-key-7f3a"
+        old = os.environ.get("VULTR_INFERENCE_API_KEY")
+        os.environ["VULTR_INFERENCE_API_KEY"] = fake
+        try:
+            r = run_cmd([sys.executable, "-c", "import json, os; print(json.dumps(dict(os.environ)))"], timeout=30)
+        finally:
+            os.environ.pop("VULTR_INFERENCE_API_KEY")
+            if old is not None:
+                os.environ["VULTR_INFERENCE_API_KEY"] = old
+        env = json.loads(r.stdout)
+        self.assertFalse(fake in r.stdout, "msb would get the API key")  # never print the environment
+        self.assertEqual(env.get("PATH"), os.environ.get("PATH"))
+        self.assertEqual(env.get("HOME"), os.environ.get("HOME"))
+
+
 class Reaper(unittest.TestCase):
     def test_removes_old_and_stopped_keeps_young(self):
         clock = Clock()
@@ -226,6 +245,23 @@ class RealMsb(unittest.TestCase):
         self.assertEqual(second.exit_code, 0)
         self.assertIn("DONE", out["first"].stdout, out["first"].stderr)
         self.assertNotEqual(out["first"].name, second.name)
+
+    def test_vmm_process_does_not_hold_the_api_key(self):
+        fake, seen = "pqproof-itest-not-a-key-51c2", []
+        argv = ["sleep", "3"]
+        os.environ["VULTR_INFERENCE_API_KEY"] = fake
+        try:
+            step = threading.Thread(target=lambda: self.step("env", argv, Limits(memory_mib=256, wall_clock_s=30)))
+            step.start()
+            while step.is_alive():
+                ps = subprocess.run(["ps", "-wwE", "-ax", "-o", "command"], capture_output=True, text=True).stdout
+                seen += [line for line in ps.splitlines() if "msb machine --name pq-" in line and "-itest-env-" in line]
+                time.sleep(0.2)
+            step.join()
+        finally:
+            os.environ.pop("VULTR_INFERENCE_API_KEY")
+        self.assertTrue(seen, "never saw the step's VMM process")
+        self.assertFalse(any(fake in line for line in seen), "the VMM process holds the API key")  # no env dump
 
     def test_reaper_removes_what_a_killed_control_plane_left(self):
         code = ("import sys; from helpers import allow; from pqproof.sandbox import Runner, Limits; "
