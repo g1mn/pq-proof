@@ -26,6 +26,10 @@ Both ids come from Vultr's public model list. **Re-check them against `https://a
 
 `pqproof/inference.py` calls `POST /v1/chat/completions` with `Authorization: Bearer`, parses `tool_calls` (arguments that are not a JSON object come back as an error on that call instead of an exception), and retries HTTP 429 and 5xx with backoff, honouring `Retry-After`. It reads the key from `VULTR_INFERENCE_API_KEY`; keep the key outside the repository.
 
+## Plan and allowlist
+
+A human approves the model's plan (JSON; the schema is `PLAN_SCHEMA` in `pqproof/plan.py`). The approved plan compiles into an allowlist of exact command lines, repo-relative file paths and pinned base images. Shells, `env`, network tools and inline code such as `python -c` are refused, and the plan has no field for egress hosts because sandboxes get none. The allowlist does not read file contents: a change like `InsecureSkipVerify: true` inside an approved file is caught by a deterministic TLS-weakening check on the diff (*planned*).
+
 ## Development
 
 ```sh
