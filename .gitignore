@@ -1,0 +1,23 @@
+# Secrets never live in this repo. Keys go in ~/.config/pqproof/*.env (mode 600).
+.env*
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ecdsa*
+id_ed25519*
+credentials
+credentials.*
+
+# Local runtime output
+runs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+.DS_Store
