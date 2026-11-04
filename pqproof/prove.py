@@ -39,6 +39,7 @@ GUEST_PROBE = "/usr/local/bin/tls_probe"
 GUEST_SRC = "/work/probe"
 GO_ENV = {"CGO_ENABLED": "0", "GOFLAGS": "-mod=mod", "GOPROXY": "off", "GOTOOLCHAIN": "local"}
 BUILD_PROBE = ("go", "build", "-trimpath", "-o=tls_probe", ".")
+PROBE_BUILD_LIMITS = Limits(cpus=2, memory_mib=2048, wall_clock_s=300)
 HYBRID_GROUPS = ("X25519MLKEM768", "SecP256r1MLKEM768", "SecP384r1MLKEM1024")
 OFFER_HYBRID = "X25519MLKEM768"  # a client that only speaks hybrid: success means ML-KEM was negotiated
 OFFER_CLASSICAL = "X25519,P-256"  # a client from before ML-KEM
@@ -124,8 +125,7 @@ def build_allowlist(image=GOLANG.ref):
 
 def build_probe(runner, out_dir, image=GOLANG.ref, job="probe"):
     """Build tls_probe inside a microVM (offline, standard library only) and copy it to out_dir."""
-    with runner.session(build_allowlist(image), job, "build", image,
-                        Limits(cpus=2, memory_mib=2048, wall_clock_s=300)) as s:
+    with runner.session(build_allowlist(image), job, "build", image, PROBE_BUILD_LIMITS) as s:
         s.copy_in(PROBE_SRC, GUEST_SRC)
         r = s.exec(list(BUILD_PROBE), env=GO_ENV, workdir=GUEST_SRC)
         if r.exit_code != 0:

@@ -103,6 +103,9 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="pqproof-e2e-") as scratch, Sinkhole() as sink:
         runner = Runner(msb=MSB, run=rec.run, egress=sink)
+        # removes sandboxes a killed earlier run left behind, now and every minute (only stopped ones
+        # or ones older than the longest step's wall clock, so never a live step of this run)
+        stop_reaper = runner.start_reaper()
         snap = os.path.join(scratch, "snapshot")
         report["repo"] = {"path": os.fspath(args.repo), "commit": snapshot(args.repo, snap, rec)}
         report["cbom_before"] = [r.to_json() for r in scan(snap)]
@@ -152,6 +155,7 @@ def main():
                   + ("" if a.result.ok else f" -- {a.result.raw_error.splitlines()[0]} ..."))
         final = outcome.attempts[-1].result
         report["cbom_after"] = [r.to_json() for r in scan(outcome.workdir)] if outcome.ok else None
+        stop_reaper.set()
 
     # checks
     every_step = [report["baseline"]["detail"]] + [a["detail"] for a in report["attempts"]]

@@ -244,6 +244,24 @@ class Environment(unittest.TestCase):
 
 
 class Reaper(unittest.TestCase):
+    def test_default_age_covers_the_longest_step(self):
+        # review day 2: the default was 150 s while builds may run 300 s, so a live build would be reaped
+        import inspect
+        from pqproof import pipeline, prove
+        from pqproof.sandbox import MAX_WALL_CLOCK_S
+        default = inspect.signature(Runner.start_reaper).parameters["max_age_s"].default
+        for lim in (pipeline.BUILD_LIMITS, pipeline.PROVE_LIMITS, prove.PROBE_BUILD_LIMITS, Limits()):
+            self.assertLessEqual(lim.wall_clock_s, MAX_WALL_CLOCK_S)
+        self.assertGreater(default, MAX_WALL_CLOCK_S)
+        for bad in (0, MAX_WALL_CLOCK_S + 1):
+            with self.subTest(wall=bad), self.assertRaises(ValueError):
+                Limits(wall_clock_s=bad)
+
+    def test_the_e2e_run_starts_the_reaper(self):
+        # README: a reaper removes leftover sandboxes at startup and every minute
+        src = (ROOT / "e2e" / "orders_edge.py").read_text()
+        self.assertIn("runner.start_reaper()", src)
+
     def test_removes_old_and_stopped_keeps_young(self):
         clock = Clock()
         msb = FakeMsb(clock)

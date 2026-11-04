@@ -43,11 +43,21 @@ class Captured(str):
     sha256 = hashlib.sha256().hexdigest()
 
 
+# The longest wall clock any step may ask for. The reaper's default age is above it, so it never
+# removes a sandbox that is still within its lifetime.
+MAX_WALL_CLOCK_S = 300
+REAP_GRACE_S = 60
+
+
 @dataclass(frozen=True)
 class Limits:
     cpus: int = 1
     memory_mib: int = 1024
     wall_clock_s: int = 120
+
+    def __post_init__(self):
+        if not 1 <= self.wall_clock_s <= MAX_WALL_CLOCK_S:
+            raise ValueError(f"wall_clock_s must be 1..{MAX_WALL_CLOCK_S}, got {self.wall_clock_s}")
 
 
 @dataclass
@@ -366,7 +376,7 @@ class Runner:
                 log.warning("reaper skipped an entry: %s: %s", type(e).__name__, e)
         return reaped
 
-    def start_reaper(self, max_age_s=Limits().wall_clock_s + 30, interval_s=60):
+    def start_reaper(self, max_age_s=MAX_WALL_CLOCK_S + REAP_GRACE_S, interval_s=60):
         """Reap now and then every interval_s in a daemon thread. Set the returned Event to stop."""
         stop = threading.Event()
 
