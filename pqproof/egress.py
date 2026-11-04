@@ -35,6 +35,7 @@ class Sinkhole:
         self.host, self.read_timeout = host, read_timeout
         self.events, self.dropped, self._canaries = [], 0, set()
         self._lock, self._socks, self._slots = threading.Lock(), [], threading.BoundedSemaphore(MAX_CONNS)
+        self._threads, self._stopping = [], threading.Event()
 
     def start(self):
         for _ in range(20):  # DNS needs the same port number on UDP and TCP
@@ -50,14 +51,26 @@ class Sinkhole:
         tcp = socket.create_server((self.host, 0))
         self._socks = [tcp, dns_tcp, udp]
         self.tcp_port, self.dns_port = tcp.getsockname()[1], udp.getsockname()[1]
-        threading.Thread(target=self._accept, args=(tcp, self._tcp), daemon=True).start()
-        threading.Thread(target=self._accept, args=(dns_tcp, self._dns_tcp), daemon=True).start()
-        threading.Thread(target=self._dns, args=(udp,), daemon=True).start()
+        self._threads = [threading.Thread(target=self._accept, args=(tcp, self._tcp), daemon=True),
+                         threading.Thread(target=self._accept, args=(dns_tcp, self._dns_tcp), daemon=True),
+                         threading.Thread(target=self._dns, args=(udp,), daemon=True)]
+        for t in self._threads:
+            t.start()
         return self
 
     def stop(self):
+        """Close every port and wait for the threads that serve them. On Linux, close() alone does not
+        wake a thread blocked in accept() or recvfrom(): the sinkhole kept accepting, and recording,
+        after stop(). shutdown() wakes it (for UDP it also raises ENOTCONN, which is expected)."""
+        self._stopping.set()
         for s in self._socks:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             s.close()
+        for t in self._threads:
+            t.join(timeout=5)
 
     def __enter__(self):
         return self.start()
@@ -98,6 +111,9 @@ class Sinkhole:
             try:
                 conn, _ = srv.accept()
             except OSError:
+                return
+            if self._stopping.is_set():
+                conn.close()
                 return
             if not self._slots.acquire(blocking=False):
                 conn.close()
@@ -146,6 +162,8 @@ class Sinkhole:
             try:
                 query, addr = udp.recvfrom(512)
             except OSError:
+                return
+            if self._stopping.is_set():  # after shutdown(), recvfrom() returns at once
                 return
             reply, qname = nxdomain(query)
             if reply is None:

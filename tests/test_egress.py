@@ -110,6 +110,42 @@ class SinkholeUnit(unittest.TestCase):
             events, dropped = sink.take()
             self.assertEqual((len(events), dropped, sink.events, sink.dropped), (MAX_EVENTS, 6, [], 0))
 
+    def test_stop_ends_the_threads_and_closes_every_port(self):
+        # On Linux, closing a socket does not wake a thread blocked in accept() or recvfrom() on it:
+        # the sinkhole went on accepting, and recording, after stop().
+        before = set(threading.enumerate())
+        sink = Sinkhole().start()
+        mine = [t for t in threading.enumerate() if t not in before]
+        sink.stop()
+        for t in mine:
+            t.join(timeout=3)
+        self.assertEqual([t for t in mine if t.is_alive()], [])
+        for port in (sink.tcp_port, sink.dns_port):
+            with self.assertRaises(OSError):
+                socket.create_connection(("127.0.0.1", port), timeout=2).close()
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.settimeout(1)
+        try:
+            u.sendto(dns_query("after-stop.example"), ("127.0.0.1", sink.dns_port))
+            with self.assertRaises(OSError):  # refused or no answer
+                u.recvfrom(512)
+        finally:
+            u.close()
+        self.assertEqual((sink.events, sink.canaries()), ([], []))
+
+    def test_an_empty_datagram_does_not_stop_dns(self):
+        with Sinkhole() as sink:
+            u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            u.settimeout(3)
+            try:
+                u.sendto(b"", ("127.0.0.1", sink.dns_port))
+                u.sendto(dns_query("still-CANARY-0011.example.net"), ("127.0.0.1", sink.dns_port))
+                reply, _ = u.recvfrom(512)
+            finally:
+                u.close()
+            self.assertEqual(reply[:2], b"\x12\x34")
+            self.assertEqual(sink.canaries(), ["CANARY-0011"])
+
     def test_malformed_dns_is_ignored(self):
         for packet in (b"", b"\x00" * 11, dns_query("example.com")[:-3], b"\x12\x34" + b"\x00" * 10 + b"\x40abc"):
             with self.subTest(packet=packet):
