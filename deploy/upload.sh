@@ -10,6 +10,8 @@
 # --fixture PATH: the e2e run snapshots its repo with `git clone`, so on the host the fixture's
 #   files are committed once into a fresh local repository with no remote. Its tree hash must
 #   equal the source commit's tree hash, so the host builds exactly the files of that commit.
+#   It belongs to the control plane's user (pqproof), because git refuses to clone a repository
+#   that another user owns ("dubious ownership").
 # --key FILE: the Vultr Serverless Inference key file goes to /etc/pqproof/inference.env with
 #   scp (directory 700, file 600, both root). Only its variable names are printed.
 set -euo pipefail
@@ -17,6 +19,7 @@ set -euo pipefail
 OPT=${PQPROOF_OPT:-/opt/pqproof}
 ETC=${PQPROOF_ETC:-/etc/pqproof}
 OWNER=${PQPROOF_KEY_OWNER:-root:root}  # user:group of /etc/pqproof and the key file
+FIXTURE_OWNER=${PQPROOF_FIXTURE_OWNER:-pqproof:pqproof}  # user:group of the fixture's host repository
 SSH=${PQPROOF_SSH:-ssh}
 SCP=${PQPROOF_SCP:-scp}
 SELF=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
@@ -48,16 +51,20 @@ send() {  # send REPO_DIR NAME [fixture]
   if remote "test -d '$dest'"; then
     echo "$name $rev: already on the host"
   else
-    git -C "$src" archive --format=tar HEAD | remote "set -e; install -d -m 755 '$OPT/$name';
+    # tar.umask 0022: directories 755 and files 644 on the host (git archive's default is 0002)
+    git -C "$src" -c tar.umask=0022 archive --format=tar HEAD | remote "set -e; install -d -m 755 '$OPT/$name';
       t=\$(mktemp -d '$OPT/$name/.part.XXXXXX'); chmod 755 \"\$t\";
       tar -x --no-same-owner -C \"\$t\"; mv \"\$t\" '$dest'"
     echo "$name $rev: sent"
   fi
   if [ -n "${3:-}" ]; then
-    remote "set -e; cd '$dest'; if [ ! -d .git ]; then git init -q; git add -A -f;
-      git -c user.name=pqproof-deploy -c user.email=deploy@localhost commit -q -m 'snapshot of $name $rev'; fi;
-      got=\$(git rev-parse 'HEAD^{tree}');
-      if [ \"\$got\" != '$tree' ]; then echo \"tree mismatch: \$got on the host, $tree here\" >&2; exit 1; fi"
+    # safe.directory: on a second run the repository already belongs to FIXTURE_OWNER, not to us
+    remote "set -e; cd '$dest'; g() { git -c safe.directory='$dest' \"\$@\"; };
+      if [ ! -d .git ]; then g init -q; g add -A -f;
+        g -c user.name=pqproof-deploy -c user.email=deploy@localhost commit -q -m 'snapshot of $name $rev'; fi;
+      got=\$(g rev-parse 'HEAD^{tree}');
+      if [ \"\$got\" != '$tree' ]; then echo \"tree mismatch: \$got on the host, $tree here\" >&2; exit 1; fi;
+      chown -R '$FIXTURE_OWNER' '$dest'; chmod -R go-w '$dest'"
     echo "$name $rev: local repository on the host, tree $tree matches"
   fi
   remote "ln -sfn '$rev' '$OPT/$name/current'"

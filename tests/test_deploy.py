@@ -80,7 +80,8 @@ class Upload(unittest.TestCase):
     def upload(self, *args):
         me = f"{os.getuid()}:{os.getgid()}"
         env = {**os.environ, "PQPROOF_SSH": str(self.bin / "ssh"), "PQPROOF_SCP": str(self.bin / "scp"),
-               "PQPROOF_OPT": str(self.opt), "PQPROOF_ETC": str(self.etc), "PQPROOF_KEY_OWNER": me}
+               "PQPROOF_OPT": str(self.opt), "PQPROOF_ETC": str(self.etc), "PQPROOF_KEY_OWNER": me,
+               "PQPROOF_FIXTURE_OWNER": me}
         return subprocess.run(["bash", str(UPLOAD), *args, "root@host.invalid"], env=env,
                               capture_output=True, text=True, timeout=120)
 
@@ -92,6 +93,8 @@ class Upload(unittest.TestCase):
         self.assertEqual(os.readlink(self.opt / "orders-edge" / "current"), rev)
         self.assertEqual((dest / "a.txt").read_text(), "two\n")
         self.assertTrue(os.access(dest / "run.sh", os.X_OK))
+        self.assertEqual(stat.S_IMODE((dest / "a.txt").stat().st_mode), 0o644)  # tar.umask 0022
+        self.assertEqual(stat.S_IMODE(dest.stat().st_mode), 0o755)
         # the host copy is a git repo with the same tree, ignored files included
         self.assertEqual(git("rev-parse", "HEAD^{tree}", cwd=dest), git("rev-parse", "HEAD^{tree}", cwd=self.fixture))
         self.assertEqual(git("remote", cwd=dest), "")
