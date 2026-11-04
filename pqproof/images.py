@@ -5,7 +5,8 @@ guests) and on the Vultr VX1 host (linux/amd64). Measured on macOS with msb 0.7.
 `msb pull name:tag@sha256:<index>` resolves the index to the host's platform, and
 `msb image inspect` then reports the platform manifest digest, not the index digest. Receipts
 record that platform digest next to the index pin. The per-platform digests below come from
-Docker Hub's tag API on 2026-11-04; amd64 has not been pulled on a VX1 host yet.
+Docker Hub's tag API on 2026-11-04; on the VX1 host (amd64) msb resolved each index to the amd64
+digest below.
 """
 import json
 import re

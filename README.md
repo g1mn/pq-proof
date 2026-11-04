@@ -22,7 +22,7 @@ browser --HTTPS--> control plane (Python, Vultr VX1)
 | Planning, patching, tool calls | `glm-5.3` |
 | Log summaries | `deepseek-v4.1-flash-1017` |
 
-Both ids come from Vultr's public model list. **Re-check them against `https://api.vultrinference.com/v1/models` after the hackathon kickoff**, and confirm that tool calls work, before a real run. The list shows `tools` for both models but no `tool_choice`, so the client never sends `tool_choice`.
+Both ids come from Vultr's public model list, re-read after the kickoff on November 4, 2026. The list shows `tools` for both models but no `tool_choice`, so the client never sends `tool_choice`; both still called a declared tool 5 times out of 5 without it. glm-5.3 writes the plans: deepseek-v4.1-flash-1017's plans did not pass the checks in 3 attempts ([docs/kickoff-spike.md](docs/kickoff-spike.md)).
 
 `pqproof/agent.py` is the model's part of a run. The model first writes the plan through one declared tool, `propose_plan` (its parameters are the plan schema). The plan must compile into an allowlist, name every image the Dockerfile uses before and after the edits, run exactly the commands the prove step runs (nginx with the repository's own config under `/work/src`, each server it builds as `[NAME]` alone), and its images must resolve; otherwise every reason found goes back to the model in one message, at most 3 times. The edits then come from the patch loop below. Calls send `reasoning_effort: low` and `max_tokens: 8192` (see `agent.py` for the measurement behind that). Repository text reaches a prompt only bounded: the files that decide the build and the TLS settings (at most 16,000 characters each, 64,000 in all, read without following symlinks), the README as marked untrusted notes (at most 4,000 characters), file paths in a narrow character set, and the CBOM rows. Control and format characters become U+FFFD, and each file sits between markers that carry a random id chosen per prompt, so a file cannot close its own block and pose as the control plane.
 
@@ -54,7 +54,7 @@ Each step runs in a fresh Microsandbox microVM with its own kernel. A step can c
 
 Egress is denied for every step, the build included. DNS goes only to a resolver on the host that records the queries it receives, over UDP and over TCP, and answers NXDOMAIN instead of forwarding them. TCP to `203.0.113.0/24`, a documentation range that is never routed, goes through Microsandbox's `--proxy` to a host sinkhole that records the destination and the bytes; that is how the demo shows a planted test hook's canary. Everything else, including the host and the control plane API, is dropped by Microsandbox's network policy, and a dead sinkhole does not open a direct route. The demo hook uses plain HTTP so the sinkhole can read the canary; HTTPS attempts are recorded as encrypted bytes only. The sinkhole is bounded too: it serves at most 16 connections at a time and keeps at most 1,000 events between collections (the rest are counted, and canary ids are still collected), and `msb` holds each guest to 32 TCP connections and 200 outbound packets per second. Attempts that Microsandbox's policy drops before they reach the sinkhole, such as a direct connection to `1.1.1.1`, are blocked but not counted, so a receipt can list only the attempts that reached the sinkhole.
 
-Integration tests (`tests/test_sandbox.py`, `tests/test_egress.py`) run real microVMs whenever `msb` is installed; set `PQPROOF_MSB_TESTS=0` to skip them and `PQPROOF_WALL_S=120` to check the full wall clock. They pin `alpine` by the digest of the copy in the local cache, so they use the network only when that cache is empty. So far they have run on macOS (Apple Silicon) with msb 0.7.13; they still have to be run on the Vultr VX1 host.
+Integration tests (`tests/test_sandbox.py`, `tests/test_egress.py`) run real microVMs whenever `msb` is installed; set `PQPROOF_MSB_TESTS=0` to skip them and `PQPROOF_WALL_S=120` to check the full wall clock. They pin `alpine` by the digest of the copy in the local cache, so they use the network only when that cache is empty. They have run on macOS (Apple Silicon) and on the Vultr VX1 host (x86_64, Ubuntu 24.04), both with msb 0.7.13; the host results are in [docs/kickoff-spike.md](docs/kickoff-spike.md).
 
 ## End-to-end run on orders-edge
 
@@ -78,6 +78,8 @@ Measured on an M-series Mac with msb 0.7.13 (November 4, 2026), 75 s in all:
 | Attempt 2, classical client | X25519 | X25519 |
 
 Every `make`, `go` and `nginx` command ran inside `msb exec` (0 on the host), the planted test hook's `CANARY-0001` landed in the sinkhole during `make test`, every microVM was removed, and the CBOM after the patch has no row that blocks hybrid key exchange (the RS256 JWT row stays: signatures are out of scope). The same probe binary built twice gave the same SHA-256.
+
+On the VX1 host (x86_64) the same scripted run passed in 120.5 s. With `--model glm-5.3` writing the plan and the edits it passed twice, in 97.3 s and 116.1 s, for $0.0217 and $0.0197 in tokens ([docs/kickoff-spike.md](docs/kickoff-spike.md)).
 
 ```sh
 python3 e2e/orders_edge.py --repo ../orders-edge --approve   # exit code 0 only if every check passes
