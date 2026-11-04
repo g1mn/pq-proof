@@ -70,6 +70,7 @@ class Upload(unittest.TestCase):
         git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "1", cwd=self.fixture)
         (self.fixture / "a.txt").write_text("two\n")
         git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-am", "2", cwd=self.fixture)
+        git("remote", "add", "origin", "https://deploy:not-a-token-789@github.com/g1mn/orders-edge.git", cwd=self.fixture)
         self.key = t / "inference.env"
         self.key.write_text("# comment\nVULTR_INFERENCE_API_KEY=not-a-real-key-value-123\nnot-a-pair-secret-456\n")
         self.key.chmod(0o600)
@@ -95,9 +96,14 @@ class Upload(unittest.TestCase):
         self.assertTrue(os.access(dest / "run.sh", os.X_OK))
         self.assertEqual(stat.S_IMODE((dest / "a.txt").stat().st_mode), 0o644)  # tar.umask 0022
         self.assertEqual(stat.S_IMODE(dest.stat().st_mode), 0o755)
-        # the host copy is a git repo with the same tree, ignored files included
+        # the host copy is a git repo at the very commit of the source (day-3 review: a receipt named a
+        # host-only snapshot commit no reader could find), ignored files included, and its origin is
+        # the source's origin as https without credentials: what a receipt names as the repository
+        self.assertEqual(git("rev-parse", "HEAD", cwd=dest), git("rev-parse", "HEAD", cwd=self.fixture))
         self.assertEqual(git("rev-parse", "HEAD^{tree}", cwd=dest), git("rev-parse", "HEAD^{tree}", cwd=self.fixture))
-        self.assertEqual(git("remote", cwd=dest), "")
+        self.assertEqual(git("status", "--porcelain", cwd=dest), "")
+        self.assertEqual(git("remote", "get-url", "origin", cwd=dest), "https://github.com/g1mn/orders-edge")
+        self.assertNotIn("not-a-token-789", (dest / ".git" / "config").read_text() + r.stdout + r.stderr)
         self.assertIn("tree", r.stdout)
         # pq-proof itself went over as its HEAD, with no .git
         own = git("rev-parse", "--short=12", "HEAD", cwd=ROOT)
@@ -118,6 +124,18 @@ class Upload(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(len(re.findall(r": already on the host", r.stdout)), 2, r.stdout)
         self.assertEqual([p.name for p in (self.opt / "orders-edge").iterdir() if p.name.startswith(".part")], [])
+
+    def test_a_host_snapshot_commit_is_replaced_by_the_source_commit(self):
+        # what upload.sh made before: a fresh repository with one local commit of the same tree
+        self.assertEqual(self.upload("--fixture", str(self.fixture)).returncode, 0)
+        dest = self.opt / "orders-edge" / git("rev-parse", "--short=12", "HEAD", cwd=self.fixture)
+        local = git("-c", "user.name=d", "-c", "user.email=d@localhost", "commit-tree", "HEAD^{tree}", "-m", "snapshot", cwd=dest)
+        git("update-ref", "HEAD", local, cwd=dest)
+        git("remote", "remove", "origin", cwd=dest)
+        r = self.upload("--fixture", str(self.fixture))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=dest), git("rev-parse", "HEAD", cwd=self.fixture))
+        self.assertEqual(git("remote", "get-url", "origin", cwd=dest), "https://github.com/g1mn/orders-edge")
 
     def test_a_changed_host_tree_is_refused(self):
         self.assertEqual(self.upload("--fixture", str(self.fixture)).returncode, 0)

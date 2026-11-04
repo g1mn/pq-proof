@@ -8,10 +8,12 @@
 # the control plane), and /opt/pqproof/<repo>/current points at it. A commit that is already
 # there is not sent again; uncommitted changes are never sent.
 # --fixture PATH: the e2e run snapshots its repo with `git clone`, so on the host the fixture's
-#   files are committed once into a fresh local repository with no remote. Its tree hash must
-#   equal the source commit's tree hash, so the host builds exactly the files of that commit.
-#   It belongs to the control plane's user (pqproof), because git refuses to clone a repository
-#   that another user owns ("dubious ownership").
+#   files become a git repository at the source's own commit (fetched from a `git bundle` sent
+#   over ssh), so a receipt names a commit the reader can find; the files on the host must match
+#   it. Its origin is the source's origin as https without credentials (what a receipt names as
+#   the repository; nothing is ever fetched from it). It belongs to the control plane's user
+#   (pqproof), because git refuses to clone a repository that another user owns ("dubious
+#   ownership").
 # --key FILE: the Vultr Serverless Inference key file goes to /etc/pqproof/inference.env with
 #   scp (directory 700, file 600, both root). Only its variable names are printed.
 set -euo pipefail
@@ -58,14 +60,24 @@ send() {  # send REPO_DIR NAME [fixture]
     echo "$name $rev: sent"
   fi
   if [ -n "${3:-}" ]; then
+    local commit url
+    commit=$(git -C "$src" rev-parse HEAD)
+    url=$(git -C "$src" remote get-url origin 2>/dev/null | sed -E 's#^git@([A-Za-z0-9.-]+):#https://\1/#;
+      s#^ssh://git@([A-Za-z0-9.-]+)(:[0-9]+)?/#https://\1/#; s#^(https://)[^/@]*@#\1#; s#\.git/?$##' |
+      grep -E '^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$' || true)
     # safe.directory: on a second run the repository already belongs to FIXTURE_OWNER, not to us
-    remote "set -e; cd '$dest'; g() { git -c safe.directory='$dest' \"\$@\"; };
-      if [ ! -d .git ]; then g init -q; g add -A -f;
-        g -c user.name=pqproof-deploy -c user.email=deploy@localhost commit -q -m 'snapshot of $name $rev'; fi;
+    git -C "$src" bundle create --quiet - HEAD | remote "set -e; cd '$dest'; g() { git -c safe.directory='$dest' \"\$@\"; };
+      b=\$(mktemp); trap 'rm -f \"\$b\"' EXIT; cat > \"\$b\";
+      [ -d .git ] || g init -q;
+      if [ \"\$(g rev-parse -q --verify HEAD || true)\" != '$commit' ]; then
+        g fetch -q \"\$b\" HEAD; g update-ref refs/heads/main '$commit'; g symbolic-ref HEAD refs/heads/main; g reset -q; fi;
+      if [ -n \"\$(g status --porcelain --untracked-files=no)\" ]; then
+        echo \"tree mismatch: the files on the host differ from commit $commit\" >&2; exit 1; fi;
       got=\$(g rev-parse 'HEAD^{tree}');
       if [ \"\$got\" != '$tree' ]; then echo \"tree mismatch: \$got on the host, $tree here\" >&2; exit 1; fi;
+      g remote remove origin 2>/dev/null || true; if [ -n '$url' ]; then g remote add origin '$url'; fi;
       chown -R '$FIXTURE_OWNER' '$dest'; chmod -R go-w '$dest'"
-    echo "$name $rev: local repository on the host, tree $tree matches"
+    echo "$name $rev: local repository on the host at commit $commit, tree $tree matches${url:+, origin $url}"
   fi
   remote "ln -sfn '$rev' '$OPT/$name/current'"
 }
