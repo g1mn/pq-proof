@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PQ-Proof runs</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1>PQ-Proof</h1>
+    <p class="muted">TLS key exchange moved to hybrid ML-KEM (X25519MLKEM768) and proved by handshakes inside microVMs. The verdict comes from the probe and exit codes, never from a model.</p>
+  </div>
+  <div class="controls">
+    <label for="run" class="muted">Run</label>
+    <select id="run"></select>
+    <button id="theme" type="button">Light</button>
+  </div>
+</header>
+<main id="main">
+  <p id="status" class="muted">Loading runs...</p>
+  <div id="view" hidden>
+    <section class="summary" id="summary"></section>
+
+    <h2>Job timeline</h2>
+    <section id="timeline"></section>
+
+    <h2>Containment</h2>
+    <section id="containment"></section>
+
+    <h2>CBOM before and after</h2>
+    <div class="pair">
+      <section><h3>Before</h3><div id="cbom-before"></div></section>
+      <section><h3>After</h3><div id="cbom-after"></div></section>
+    </div>
+
+    <h2>Proofs</h2>
+    <section id="proofs"></section>
+
+    <h2>Patch</h2>
+    <section id="patch"></section>
+
+    <h2>Hashed receipt</h2>
+    <section id="receipt"></section>
+  </div>
+</main>
+<footer class="muted" id="footer"></footer>
+</body>
+</html>

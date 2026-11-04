@@ -6,7 +6,7 @@ Give PQ-Proof a repository URL. An agent inventories the repo's cryptography, pa
 
 ## Architecture (draft)
 
-The control plane is one Python (3.12+) process that sticks to the standard library where it can. It drives [Microsandbox](https://github.com/superradcompany/microsandbox) through the `msb` CLI from the official installer, so every action that touches a sandbox is a plain command line that is logged and can go into the receipt. Model calls go to Vultr Serverless Inference's OpenAI-compatible `/v1/chat/completions` endpoint over `urllib`; the agent needs no SDK, and the API key never leaves the control plane. Repo snapshots and receipts go to Vultr Object Storage through `boto3`, the standard S3 client (*planned*). The web UI is a single static HTML page with plain JavaScript, served by the same process, with no build step (*planned*). We chose Python because Microsandbox's docs and Vultr's sandboxing guide both use it, Ubuntu 24.04 on the VX1 host ships Python 3.12, and this is a one-person, 4.5-day build.
+The control plane is one Python (3.12+) process that sticks to the standard library where it can. It drives [Microsandbox](https://github.com/superradcompany/microsandbox) through the `msb` CLI from the official installer, so every action that touches a sandbox is a plain command line that is logged and can go into the receipt. Model calls go to Vultr Serverless Inference's OpenAI-compatible `/v1/chat/completions` endpoint over `urllib`; the agent needs no SDK, and the API key never leaves the control plane. Repo snapshots and receipts go to Vultr Object Storage through `boto3`, the standard S3 client (*planned*). The web UI is a static HTML page with plain JavaScript and CSS, served by the same process from the standard library's `http.server`, with no build step and nothing loaded from another site (see Web UI). We chose Python because Microsandbox's docs and Vultr's sandboxing guide both use it, Ubuntu 24.04 on the VX1 host ships Python 3.12, and this is a one-person, 4.5-day build.
 
 ```
 browser --HTTPS--> control plane (Python, Vultr VX1)
@@ -104,6 +104,23 @@ python3 -m pqproof verify-receipt runs/e2e/receipt   # exit code 0 only if every
 ```
 
 It validates `receipt.json` against the schema, recomputes `receipt_id`, the byte count and SHA-256 of every artifact (read without following symlinks), refuses a file that is not in the manifest and a reference whose hash differs from the manifest, compares the CBOM rows with their files, and renders `receipt.html` again to compare it with the file. The e2e run does the same before it reports success. This is a hashed receipt, not a statement of who made it: anyone can edit a file and write new hashes, so a `receipt_id` means something only next to one from a source you trust, such as the run's own output. On a Mac (msb 0.7.13, November 5, 2026) the scripted run's receipt had 47 artifacts in 328 KB and passed all 53 checks.
+
+## Web UI
+
+```sh
+python3 -m pqproof web --runs runs/   # http://127.0.0.1:8080/ ; each run directory is an e2e --out
+```
+
+`pqproof/web.py` serves one page (`pqproof/static/`: HTML, CSS and plain JavaScript, no build step) and a small JSON API over the run directories under `--runs`; it never runs anything itself. For the chosen run the page shows the verdict, a job timeline (control-plane phases and every microVM, placed by time, with failed steps marked), the containment panel (each canary that reached the sinkhole with the bytes it sent, patches refused for weakening TLS, how many egress attempts reached the sinkhole, `not counted` for what the policy dropped, host build commands, microVMs destroyed, and each microVM's network flags), the CBOM before and after side by side, the proofs, the attempts and the diff that passed, and the receipt with its links. Every request for a run re-checks its receipt with the same code as `verify-receipt`, and the page says whether all hashes matched.
+
+| Request | Answer |
+|---|---|
+| `GET /api/runs` | runs that have a receipt, newest first |
+| `GET /api/runs/ID` | the run's `receipt.json`, the verification result, links |
+| `GET /runs/ID/receipt/PATH` | `receipt.html`, `receipt.json` or a file under `artifacts/` |
+| `POST /api/runs` `{"repo": "..."}` | a live run, if the gate admits it |
+
+Live runs go through a gate: `web.Gate.admit(repo, ip)` admits or refuses with a status and a reason, and an admitted run goes to a starter that releases the gate when the run ends. This is where the public demo's limits plug in (only allowlisted fixtures, one run at a time, a daily count per IP, a daily inference budget). In this build the gate refuses every request (`503`, "live runs are off") and there is no starter, so the page shows recorded runs only. Receipt text reaches the page only as text (no `innerHTML`); paths are checked segment by segment and read without following symlinks, so nothing outside a run's `receipt/` directory is served; every response carries a Content-Security-Policy (the page: same origin only; artifacts: `sandbox`) and `nosniff`. The server binds `127.0.0.1` unless told otherwise.
 
 ## Known limits
 
