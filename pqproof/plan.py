@@ -128,8 +128,7 @@ def clean_path(path):
     return norm
 
 
-def built_programs(commands):
-    """Names of the programs a plan builds: the last segment of each `go build -o=PATH`."""
+def _built_programs(commands, problems):
     names = set()
     for argv in commands:
         if isinstance(argv, list) and argv[:2] == ["go", "build"]:
@@ -137,9 +136,19 @@ def built_programs(commands):
                 if isinstance(arg, str) and arg.startswith("-o="):
                     name = arg[3:].rsplit("/", 1)[-1]
                     if name in PROGRAMS or name in RESERVED_NAMES or not re.fullmatch(TARGET, name):
-                        raise PlanError(f"go build output must not shadow an allowed program: {arg!r}")
-                    names.add(name)
+                        problems.append(f"go build output must not shadow an allowed program: {arg!r}")
+                    else:
+                        names.add(name)
     return frozenset(names)
+
+
+def built_programs(commands):
+    """Names of the programs a plan builds: the last segment of each `go build -o=PATH`."""
+    problems = []
+    names = _built_programs(commands, problems)
+    if problems:
+        raise PlanError("\n".join(problems))
+    return names
 
 
 def check_command(argv, built=frozenset()):
@@ -236,7 +245,9 @@ class Allowlist:
 
 
 def compile_allowlist(plan):
-    """Validate an approved plan and compile it. Raises PlanError on anything off-schema."""
+    """Validate an approved plan and compile it. Raises PlanError on anything off-schema, naming
+    every problem found, one per line, so one reply from the model can fix them all; a plan whose
+    shape is off (not an object, a field missing or unknown, a list that is not a list) stops at that."""
     if not isinstance(plan, dict):
         raise PlanError("plan must be a JSON object")
     extra = set(plan) - set(PLAN_SCHEMA["properties"])
@@ -250,20 +261,33 @@ def compile_allowlist(plan):
     for key in ("edits", "commands", "images", "targets"):
         if not isinstance(plan[key], list):
             raise PlanError(f"{key} must be a list")
-    check_text(plan["summary"], "summary", SUMMARY_MAX)
+    problems = []
+
+    def checked(check, *args):
+        try:
+            return check(*args)
+        except PlanError as e:
+            problems.append(str(e))
+            return None
+
+    checked(check_text, plan["summary"], "summary", SUMMARY_MAX)
     paths = set()
     for edit in plan["edits"]:
         if not isinstance(edit, dict) or set(edit) != {"path", "why"}:
-            raise PlanError(f"edit must have exactly 'path' and 'why': {edit!r}")
-        check_text(edit["why"], "why", WHY_MAX)
-        paths.add(clean_path(edit["path"]))
-    built = built_programs(plan["commands"])
-    targets = [check_target(t, built) for t in plan["targets"]]
-    if not targets:
-        raise PlanError("targets is empty: name at least one server address to probe")
-    if len({a for a, _ in targets}) != len(targets):
-        raise PlanError(f"targets repeat an address: {targets}")
-    return Allowlist(commands=frozenset(check_command(c, built) for c in plan["commands"]),
-                     paths=frozenset(paths),
-                     images=frozenset(check_image(i) for i in plan["images"]),
+            problems.append(f"edit must have exactly 'path' and 'why': {edit!r}")
+            continue
+        checked(check_text, edit["why"], "why", WHY_MAX)
+        paths.add(checked(clean_path, edit["path"]))
+    built = _built_programs(plan["commands"], problems)
+    targets = [checked(check_target, t, built) for t in plan["targets"]]
+    if not plan["targets"]:
+        problems.append("targets is empty: name at least one server address to probe")
+    good = [t for t in targets if t]
+    if len({a for a, _ in good}) != len(good):
+        problems.append(f"targets repeat an address: {good}")
+    commands = [checked(check_command, c, built) for c in plan["commands"]]
+    images = [checked(check_image, i) for i in plan["images"]]
+    if problems:
+        raise PlanError("\n".join(dict.fromkeys(problems)))
+    return Allowlist(commands=frozenset(commands), paths=frozenset(paths), images=frozenset(images),
                      targets=frozenset(targets))

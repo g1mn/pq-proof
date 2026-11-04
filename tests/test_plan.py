@@ -238,6 +238,20 @@ class Reject(unittest.TestCase):
                     compile_allowlist(plan)
                 self.assertIn(message, str(cm.exception))
 
+    def test_every_problem_is_named_at_once(self):
+        # VX1 review: compile_allowlist raised on the first bad command, path or image, so a model told
+        # why its plan was refused fixed one thing per reply
+        plan = plan_with(commands=PLAN["commands"] + [["sh", "-c", "id"], ["curl", "x"]],
+                         edits=PLAN["edits"] + [{"path": "../x", "why": "w"}, {"path": ".git/config", "why": "w"}],
+                         images=PLAN["images"] + ["nginx:latest", f"ghcr.io/a/b@sha256:{DIGEST}"],
+                         targets=PLAN["targets"] + [{"addr": "10.0.0.1:443", "server": "nginx"}],
+                         summary="a\x1bb")
+        with self.assertRaises(PlanError) as cm:
+            compile_allowlist(plan)
+        want = ["summary has characters", "'../x'", "'.git/config'", "'sh'", "'curl'", "'nginx:latest'", "ghcr.io",
+                "'10.0.0.1:443'"]
+        self.assertEqual([w for w in want if w not in str(cm.exception)], [], str(cm.exception).splitlines())
+
     def test_bypasses_found_in_review(self):
         # Each of these ran a shell, inline code or a network client while a denylist was in place.
         bypasses = [

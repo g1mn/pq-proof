@@ -186,6 +186,27 @@ class Drafts(Snapshot):
         self.assertIn("target server must be nginx or a program this plan builds", str(ctx.exception))
         self.assertIn("the Dockerfile names nginx:1.28-bookworm (line", str(ctx.exception))
 
+    def test_no_reason_hides_another(self):
+        # VX1 review: the image tag loop and compile_allowlist each stopped at their first problem, so a
+        # bad tag hid the missing Dockerfile image and `sh` hid `curl`
+        build = PLAN["commands"] + [["sh", "-c", "id"], ["curl", "x"]]
+        cases = {
+            "latest tag, two bad commands, a Dockerfile image left out": (
+                {**PLAN, "images": ["golang:1.27-bookworm", "nginx:latest"], "commands": build},
+                ["'nginx:latest'", "'sh'", "'curl'", "nginx:1.28-bookworm (line"]),
+            "a digest on one image, a Dockerfile image left out": (
+                {**PLAN, "images": ["golang:1.27-bookworm@sha256:" + "a" * 64, "nginx:1.30-trixie"]},
+                ["golang:1.27-bookworm@sha256:", "nginx:1.28-bookworm (line"]),
+            "a bad path, a bad why, a bad target": (
+                {**PLAN, "edits": PLAN["edits"] + [{"path": "../x", "why": "w"}, {"path": "go.mod", "why": "a\x1bb"}],
+                 "targets": PLAN["targets"] + [{"addr": "10.0.0.1:443", "server": "nginx"}]},
+                ["'../x'", "why has characters", "'10.0.0.1:443'"]),
+        }
+        for name, (plan, reasons) in cases.items():
+            with self.subTest(name), self.assertRaises(PlanError) as ctx:
+                check_draft(plan, self.dockerfile)
+            self.assertEqual([r for r in reasons if r not in str(ctx.exception)], [], str(ctx.exception).splitlines())
+
     def test_malformed_fields_are_a_plan_error_not_a_crash(self):
         for field, value in (("targets", 5), ("targets", "127.0.0.1:8443"), ("commands", 5), ("commands", [5]),
                              ("targets", [5]), ("commands", None)):
