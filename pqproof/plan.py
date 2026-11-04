@@ -98,6 +98,17 @@ def check_text(value, field, limit):
     return value
 
 
+def clean_text(text, limit=None):
+    """Repository text on its way into a prompt: control and format characters (except tab and
+    newline), private use, surrogates and unassigned code points become U+FFFD, so an escape
+    sequence or a bidi override does not reach the model as it is. With a limit, the text is cut
+    to that many characters and says so."""
+    text = "".join("\ufffd" if c not in "\t\n" and unicodedata.category(c) in UNPRINTABLE else c for c in str(text))
+    if limit is not None and len(text) > limit:
+        text = text[:limit] + f"\n[... cut at {limit} characters]"
+    return text
+
+
 def clean_path(path):
     """Repo-relative POSIX path, or PlanError."""
     if not isinstance(path, str) or not path:

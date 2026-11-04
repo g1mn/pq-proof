@@ -77,7 +77,34 @@ class Layout:
     pid: str  # nginx's pid file, created for NGINX_USER before nginx starts
 
 
-def tls_layout(root, nginx_conf="nginx/nginx.conf"):
+NGINX_CONF = "nginx/nginx.conf"
+
+
+def runtime_problem(plan, nginx_conf=NGINX_CONF):
+    """Why the plan's prove commands are not what the prove step runs, or None. The prove step does
+    not run the Dockerfile: the repository stays at SRC, nginx gets `-t -c` and `-c` with the
+    repository's own config there, and a built program is started only when it is listed alone, as
+    [NAME], so it runs with its own defaults. A plan that says otherwise would pass approval and then
+    fail in the microVM, so the planner hears the reason first."""
+    conf = f"{SRC}/{nginx_conf}"
+    commands = [c for c in plan.get("commands") or [] if isinstance(c, list)]
+    for argv in commands:
+        if argv[:1] == ["nginx"] and argv[-1] != conf:
+            return (f"{' '.join(map(str, argv))}: the prove step does not run the Dockerfile; the repository stays at "
+                    f"{SRC}, so nginx runs the repository's config as {conf}")
+    for want in (["nginx", "-t", "-c", conf], ["nginx", "-c", conf]):
+        if want not in commands:
+            return f"list {want}: the prove step checks and then starts nginx with the repository's config"
+    for t in plan.get("targets") or []:
+        server = t.get("server") if isinstance(t, dict) else None
+        if isinstance(server, str) and server != "nginx" and [server] not in commands:
+            return (f"target {t.get('addr')} is served by {server}: list [\"{server}\"] by itself; the prove step starts "
+                    f"a built program only from that command, with no arguments, so it uses its own defaults (the TLS "
+                    f"files sit where the nginx config's ssl_certificate lines say)")
+    return None
+
+
+def tls_layout(root, nginx_conf=NGINX_CONF):
     """Where the nginx config expects its TLS files, and the names the test certificate needs."""
     text = _read_text(root, nginx_conf)
     if text is None:

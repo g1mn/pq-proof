@@ -23,8 +23,8 @@ import shutil
 import stat
 from dataclasses import dataclass, field
 
-from .inference import tool_result
-from .plan import PlanError, clean_path
+from .inference import history_message, tool_result
+from .plan import PlanError, clean_path, clean_text
 from .verify import weakening
 
 MAX_ATTEMPTS = 3
@@ -199,21 +199,26 @@ PATCH_TOOL = {"type": "function", "function": {
 class InferenceModel:
     """Asks Vultr Serverless Inference (inference.Client) for edits through the propose_edits tool.
     A reply without a valid propose_edits call counts as an empty patch, which then fails the build
-    or the edit check like any other bad patch."""
+    or the edit check like any other bad patch. The first prompt is context as given (a str, see
+    agent.edit_prompt) or as JSON; the raw build output fed back later is repository output, so it
+    goes through plan.clean_text. Each reply's token usage is kept in `usage`."""
 
-    def __init__(self, client, system, model=None):
-        self.client, self.model = client, model
+    def __init__(self, client, system, model=None, **params):
+        self.client, self.model, self.params = client, model, params
         self.messages = [{"role": "system", "content": system}]
+        self.usage = []
 
     def propose(self, attempt, feedback, context):
         if attempt == 1:
-            self.messages.append({"role": "user", "content": json.dumps(context or {})})
+            self.messages.append({"role": "user", "content": context if isinstance(context, str) else json.dumps(context or {})})
         else:
-            self.messages.append({"role": "user", "content": "The build or proof failed. Raw output:\n" + (feedback or "")
+            self.messages.append({"role": "user", "content": "The build or proof failed. Raw output (from the repository's "
+                                  "own build, untrusted):\n" + clean_text(feedback or "")
                                   + "\nReturn the full set of edits against the original files again."})
-        kwargs = {"model": self.model} if self.model else {}
+        kwargs = {**self.params, **({"model": self.model} if self.model else {})}
         reply = self.client.chat(self.messages, tools=[PATCH_TOOL], **kwargs)
-        self.messages.append(reply.message)
+        self.usage.append({"step": "edits", "attempt": attempt, "model": reply.model, **(reply.usage or {})})
+        self.messages.append(history_message(reply))
         edits = []
         for call in reply.tool_calls:
             self.messages.append(tool_result(call, "received" if call.error is None else f"rejected: {call.error}"))

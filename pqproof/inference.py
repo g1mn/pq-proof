@@ -144,6 +144,15 @@ def parse_reply(body, tools=None):
                  model=body.get("model"), message=message)
 
 
+def history_message(reply):
+    """The assistant message to append to the conversation: role, content and tool calls only, so
+    server-specific fields (reasoning text, for one) are not sent back."""
+    msg = {"role": "assistant", "content": reply.message.get("content")}
+    if reply.message.get("tool_calls"):
+        msg["tool_calls"] = reply.message["tool_calls"]
+    return msg
+
+
 def tool_result(call, content):
     """Message that answers one tool call."""
     return {"role": "tool", "tool_call_id": call.id, "content": content}
@@ -177,6 +186,37 @@ def urllib_send(url, headers, data, timeout):
     except urllib.error.HTTPError as e:
         with e:  # an HTTPError holds the open response
             return e.code, dict(e.headers or {}), e.read()
+
+
+def key_from_file(path):
+    """The API key from an env file's `VULTR_INFERENCE_API_KEY=...` line (`export ` and quotes
+    allowed). path may be /dev/stdin, so a root-only key file can reach an unprivileged control
+    plane as `< /etc/pqproof/inference.env` without entering any process environment."""
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    for line in text.splitlines():
+        name, sep, value = line.strip().removeprefix("export ").partition("=")
+        if sep and name.strip() == API_KEY_ENV and value.strip().strip("'\""):
+            return value.strip().strip("'\"")
+    raise InferenceError(f"no {API_KEY_ENV}=... line in {path}")
+
+
+def parse_rates(models):
+    """{model id: (USD per prompt token, USD per completion token)} from a /v1/models body."""
+    out = {}
+    for m in (models or {}).get("data") or []:
+        try:
+            out[m["id"]] = (float(m["input_modalities"][0]["pricing"][0]["cost_usd"]),
+                            float(m["output_modalities"][0]["pricing"][0]["cost_usd"]))
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+    return out
+
+
+def fetch_rates(base_url=BASE_URL, timeout=30.0):
+    """parse_rates of the public model list. No key is sent: the list needs none."""
+    with _OPENER.open(urllib.request.Request(base_url.rstrip("/") + "/models"), timeout=timeout) as r:
+        return parse_rates(json.loads(r.read()))
 
 
 class Client:

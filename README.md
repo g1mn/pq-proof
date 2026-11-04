@@ -24,6 +24,8 @@ browser --HTTPS--> control plane (Python, Vultr VX1)
 
 Both ids come from Vultr's public model list. **Re-check them against `https://api.vultrinference.com/v1/models` after the hackathon kickoff**, and confirm that tool calls work, before a real run. The list shows `tools` for both models but no `tool_choice`, so the client never sends `tool_choice`.
 
+`pqproof/agent.py` is the model's part of a run. The model first writes the plan through one declared tool, `propose_plan` (its parameters are the plan schema). The plan must compile into an allowlist, name every image the Dockerfile uses before and after the edits, run exactly the commands the prove step runs (nginx with the repository's own config under `/work/src`, each server it builds as `[NAME]` alone), and its images must resolve; otherwise the reason goes back to the model, at most 3 times. The edits then come from the patch loop below. Calls send `reasoning_effort: low` and `max_tokens: 8192` (see `agent.py` for the measurement behind that). Repository text reaches a prompt only bounded: the files that decide the build and the TLS settings (at most 16,000 characters each, 64,000 in all, read without following symlinks), the README as marked untrusted notes (at most 4,000 characters), file paths in a narrow character set, and the CBOM rows. Control and format characters become U+FFFD, and each file sits between markers that carry a random id chosen per prompt, so a file cannot close its own block and pose as the control plane.
+
 `pqproof/inference.py` calls `POST /v1/chat/completions` with `Authorization: Bearer` and retries HTTP 429 and 5xx with backoff, honouring `Retry-After`. It does not trust `tool_calls`, because a prompt injection in the target repo can steer the model: a call to a tool the request did not declare, or with arguments that are not a JSON object, repeat a key, miss a required field, add an undeclared one or have the wrong type, comes back with an error on that call and no arguments. Any other malformed response raises `InferenceError`, and call ids are made unique. It reads the key from `VULTR_INFERENCE_API_KEY`; keep the key outside the repository. The client does not follow redirects, so the `Authorization` header cannot be carried to another host, and it redacts the key from any error text, including a server's own error message.
 
 ## Plan and allowlist
@@ -63,7 +65,7 @@ Integration tests (`tests/test_sandbox.py`, `tests/test_egress.py`) run real mic
 3. Build: a microVM from the Dockerfile's build image runs `make test` and `go build` offline (vendored modules, `GOPROXY=off`); the binary comes out as one regular file. Prove: a microVM from the Dockerfile's runtime image runs `nginx -t`, starts the API and nginx as background jobs, passes the probe's two controls, checks that nginx owns port 8443 and the API port 9443, and probes both TLS ports. The Dockerfile itself is never built.
 4. Baseline first, then the patch loop.
 
-**The model is scripted in this run.** No Vultr Serverless Inference key was available yet, so `e2e/orders-edge-scripted-model.json` stands in for it: a plan and two attempts of fixed edits written by hand, and no inference call is made. Attempt 1 changes the nginx group list, the Go `CurvePreferences` and the `go` line but keeps the OpenSSL 3.0 runtime image on purpose; attempt 2 also moves the runtime image to `nginx:1.30-trixie`. The run shows containment, the build, the raw-error feedback and the proof, not model quality.
+**`--model scripted`, the default, is the run below** (and what tests and CI use): `e2e/orders-edge-scripted-model.json` stands in for the model, with a plan and two attempts of fixed edits written by hand, and no inference call is made. Attempt 1 changes the nginx group list, the Go `CurvePreferences` and the `go` line but keeps the OpenSSL 3.0 runtime image on purpose; attempt 2 also moves the runtime image to `nginx:1.30-trixie`. The run shows containment, the build, the raw-error feedback and the proof, not model quality.
 
 Measured on an M-series Mac with msb 0.7.13 (November 4, 2026), 75 s in all:
 
@@ -79,6 +81,13 @@ Every `make`, `go` and `nginx` command ran inside `msb exec` (0 on the host), th
 
 ```sh
 python3 e2e/orders_edge.py --repo ../orders-edge --approve   # exit code 0 only if every check passes
+```
+
+With a model id instead, the model writes the plan and the edits, and the same checks decide the run. The key comes from `--key-file` (an env file with `VULTR_INFERENCE_API_KEY=...`) or from the environment; `/dev/stdin` lets a root-only key file reach an unprivileged control plane without entering any process environment. The report records each reply's tokens and their cost at the public model list's rates.
+
+```sh
+sudo -u pqproof python3 e2e/orders_edge.py --repo /opt/pqproof/orders-edge/current --approve \
+    --model glm-5.3 --key-file /dev/stdin < /etc/pqproof/inference.env
 ```
 
 ## Development
