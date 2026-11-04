@@ -31,7 +31,7 @@ from dataclasses import dataclass
 
 from . import prove
 from .loop import BuildResult, _open_nofollow
-from .plan import Allowlist
+from .plan import Allowlist, _built_programs
 from .sandbox import Limits
 from .scan import dockerfile_images
 
@@ -97,7 +97,10 @@ def runtime_problems(plan, nginx_conf=NGINX_CONF):
     The prove step does not run the Dockerfile: the repository stays at SRC, nginx gets `-t -c` and
     `-c` with the repository's own config there, and a built program is started only when it is
     listed alone, as [NAME], so it runs with its own defaults. A plan that says otherwise would pass
-    approval and then fail in the microVM, so the planner hears every reason first."""
+    approval and then fail in the microVM, so the planner hears every reason first. Every server the
+    prove step starts (nginx, and each built program listed alone) must be a target's server: a
+    server that is started but never probed is a key exchange the proof says nothing about. Which
+    port of a server to probe stays the approver's call."""
     conf = f"{SRC}/{nginx_conf}"
     commands = [c for c in plan.get("commands") or [] if isinstance(c, list)]
     out = []
@@ -108,6 +111,13 @@ def runtime_problems(plan, nginx_conf=NGINX_CONF):
     for want in (["nginx", "-t", "-c", conf], ["nginx", "-c", conf]):
         if want not in commands:
             out.append(f"list {want}: the prove step checks and then starts nginx with the repository's config")
+    servers = {t.get("server") for t in plan.get("targets") or [] if isinstance(t, dict)}
+    started = ["nginx"] + sorted(n for n in _built_programs(commands, []) if [n] in commands)
+    for name in started:
+        if name not in servers:
+            out.append(f"the prove step starts {name}, but no target names {name}: add its TLS listener as "
+                       f"{{\"addr\": \"127.0.0.1:PORT\", \"server\": \"{name}\"}}"
+                       + ("" if name == "nginx" else f", or do not list [\"{name}\"] if it serves no TLS"))
     for t in plan.get("targets") or []:
         server = t.get("server") if isinstance(t, dict) else None
         if isinstance(server, str) and server != "nginx" and [server] not in commands:

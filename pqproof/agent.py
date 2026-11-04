@@ -90,7 +90,8 @@ digest before a human approves. Its scan judges a base image by the Debian relea
 ships OpenSSL 3.0 (no ML-KEM), trixie ships OpenSSL 3.5 (ML-KEM); a tag that names no known release is \
 reported as unknown, and the run does not pass with an unknown row.
 - targets: each TLS listener to probe inside the prove microVM, {"addr": "127.0.0.1:PORT", "server": "nginx" \
-or the NAME of a program you build}. Never 127.0.0.1:4433 or 127.0.0.1:4434 (the probe's own servers)."""
+or the NAME of a program you build}. nginx and every program you list by itself are started, so each must be \
+the server of at least one target. Never 127.0.0.1:4433 or 127.0.0.1:4434 (the probe's own servers)."""
 
 EDIT_SYSTEM = """You write PQ-Proof patches. Make the approved plan's edits so the repository's TLS servers \
 negotiate hybrid ML-KEM (X25519MLKEM768) with clients that offer it, while clients that offer only classical \

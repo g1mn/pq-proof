@@ -186,6 +186,18 @@ class Drafts(Snapshot):
         self.assertIn("target server must be nginx or a program this plan builds", str(ctx.exception))
         self.assertIn("the Dockerfile names nginx:1.28-bookworm (line", str(ctx.exception))
 
+    def test_every_server_the_prove_step_starts_is_probed(self):
+        # VX1 review (minor): a plan that probed only the API passed, though the prove step starts nginx
+        # with the repository's config; the proof would then say nothing about the edge's key exchange
+        api_only = {**PLAN, "targets": [{"addr": "127.0.0.1:9443", "server": "api"}]}
+        with self.assertRaisesRegex(PlanError, r"starts nginx.*no target names nginx"):
+            check_draft(api_only, self.dockerfile)
+        nginx_only = {**PLAN, "targets": [{"addr": "127.0.0.1:8443", "server": "nginx"}]}
+        with self.assertRaisesRegex(PlanError, r"starts api.*no target names api"):
+            check_draft(nginx_only, self.dockerfile)
+        built_not_started = {**nginx_only, "commands": [c for c in PLAN["commands"] if c != ["api"]]}
+        self.assertEqual(check_draft(built_not_started, self.dockerfile).addrs, {"127.0.0.1:8443"})
+
     def test_no_reason_hides_another(self):
         # VX1 review: the image tag loop and compile_allowlist each stopped at their first problem, so a
         # bad tag hid the missing Dockerfile image and `sh` hid `curl`
