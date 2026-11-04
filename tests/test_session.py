@@ -2,12 +2,15 @@
 import json
 import os
 import pathlib
+import resource
 import subprocess
+import sys
 import tempfile
 import unittest
 
-from helpers import allow
-from pqproof.sandbox import LABEL, Runner, SandboxError
+from helpers import allow, msb_available
+from pqproof.images import NGINX_BOOKWORM
+from pqproof.sandbox import COPY_OUT_MAX, LABEL, Runner, SandboxError, run_cmd
 
 IMG = "golang:1.27-bookworm@sha256:" + "1" * 64
 
@@ -18,7 +21,7 @@ class FakeMsb:
     def __init__(self, out_kind="file", exec_rc=0, create_rc=0):
         self.out_kind, self.exec_rc, self.create_rc, self.calls, self.boxes = out_kind, exec_rc, create_rc, [], set()
 
-    def __call__(self, argv, timeout=None):
+    def __call__(self, argv, timeout=None, max_file_bytes=None):
         self.calls.append(argv)
         cmd = argv[1]
         if cmd == "create":
@@ -118,6 +121,35 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(os.listdir(out), [])  # nothing left on the host
                 self.assertIsNotNone(s.destroyed_at)
 
+    def test_copy_out_is_capped(self):
+        # review day 2: a guest file of any size was written to the host (8-9 GiB free on the build Mac)
+        class Big(FakeMsb):
+            def __call__(self, argv, timeout=None, max_file_bytes=None):
+                if argv[1] == "copy" and ":" in argv[3]:
+                    self.cap = max_file_bytes
+                    self.calls.append(argv)
+                    with open(argv[4], "wb") as f:
+                        f.truncate(2 << 30)  # sparse: no disk used
+                    return subprocess.CompletedProcess(argv, 0, "", "")
+                return super().__call__(argv, timeout)
+        msb = Big()
+        with Runner(msb="msb", run=msb).session(self.allow, "job1", "build", IMG) as s:
+            with self.assertRaises(SandboxError) as cm:
+                s.copy_out("/work/src/out/api", self.tmp.name)
+        self.assertIn("larger than", str(cm.exception))
+        self.assertEqual(msb.cap, COPY_OUT_MAX)  # msb copy itself ran under the file size limit
+        self.assertFalse(os.path.lexists(os.path.join(self.tmp.name, "api")))
+
+    def test_run_cmd_file_size_limit(self):
+        out = os.path.join(self.tmp.name, "big")
+        code = f"open({out!r}, 'wb').write(b'x' * (3 << 20))"
+        r = run_cmd([sys.executable, "-c", code], timeout=60, max_file_bytes=1 << 20)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertLessEqual(os.path.getsize(out), 1 << 20)
+        before = resource.getrlimit(resource.RLIMIT_FSIZE)
+        run_cmd([sys.executable, "-c", "pass"], timeout=60, max_file_bytes=1 << 20)
+        self.assertEqual(resource.getrlimit(resource.RLIMIT_FSIZE), before)  # the control plane's own limit is back
+
     def test_copy_out_does_not_overwrite(self):
         pathlib.Path(self.tmp.name, "api").write_text("host file")
         with Runner(msb="msb", run=FakeMsb()).session(self.allow, "j", "s", IMG) as s:
@@ -148,6 +180,18 @@ class SessionTests(unittest.TestCase):
                 raise KeyError("boom")
         self.assertEqual(s.host_commands[-1][1], "rm")
         self.assertEqual(msb.boxes, set())
+
+
+@unittest.skipUnless(msb_available(), "msb not installed")
+class RealCopyOut(unittest.TestCase):
+    def test_a_file_over_the_cap_stops_msb_copy(self):
+        img, mk = NGINX_BOOKWORM.ref, ["sh", "-c", "head -c 4194304 /dev/zero > /tmp/big"]  # test-only command
+        with tempfile.TemporaryDirectory() as d, Runner().session(allow(img, mk), "itest", "copycap", img) as s:
+            self.assertEqual(s.exec(mk).exit_code, 0)
+            with self.assertRaises(SandboxError):
+                s.copy_out("/tmp/big", d, max_bytes=1 << 20)
+            self.assertEqual(os.listdir(d), [])  # nothing left behind
+            self.assertEqual(os.path.getsize(s.copy_out("/tmp/big", d)), 4 << 20)  # under the default cap
 
 
 if __name__ == "__main__":

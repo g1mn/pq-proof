@@ -54,9 +54,9 @@ class Recorder:
     def __init__(self):
         self.argvs = []
 
-    def run(self, argv, timeout=None):
+    def run(self, argv, timeout=None, max_file_bytes=None):
         self.argvs.append(list(argv))
-        return run_cmd(argv, timeout=timeout)
+        return run_cmd(argv, timeout=timeout, max_file_bytes=max_file_bytes)
 
 
 def snapshot(repo, dest, rec):

@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import resource
 import secrets
 import shutil
 import stat
@@ -46,6 +47,7 @@ class Captured(str):
 # The longest wall clock any step may ask for. The reaper's default age is above it, so it never
 # removes a sandbox that is still within its lifetime.
 MAX_WALL_CLOCK_S = 300
+COPY_OUT_MAX = 256 << 20  # a built server binary is ~10 MiB
 REAP_GRACE_S = 60
 
 
@@ -124,11 +126,33 @@ class _Drain:
         return captured(self.head, self.tail, self.total, self.hash.hexdigest())
 
 
-def run_cmd(argv, timeout=None):
+_RLIMIT_LOCK = threading.Lock()
+
+
+def _popen(argv, max_file_bytes=None):
+    """Popen with msb_env(). With max_file_bytes, the child starts under RLIMIT_FSIZE: it cannot make
+    any file larger (the kernel stops the write). The limit is set on this process only around the
+    fork, under a lock, and put back; nothing the control plane writes comes near it."""
+    def popen():
+        return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=msb_env())
+    if max_file_bytes is None:
+        return popen()
+    with _RLIMIT_LOCK:
+        old = resource.getrlimit(resource.RLIMIT_FSIZE)
+        hard = old[1]
+        cap = max_file_bytes if hard == resource.RLIM_INFINITY else min(max_file_bytes, hard)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (cap, hard))
+        try:
+            return popen()
+        finally:
+            resource.setrlimit(resource.RLIMIT_FSIZE, old)
+
+
+def run_cmd(argv, timeout=None, max_file_bytes=None):
     """Run a command with msb_env(). stdout and stderr come back as Captured text, so a step that
-    floods its output cannot fill the control plane's memory."""
-    with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          env=msb_env()) as p:
+    floods its output cannot fill the control plane's memory. max_file_bytes: see _popen."""
+    with _popen(argv, max_file_bytes) as p:
         out, err = _Drain(p.stdout), _Drain(p.stderr)
         try:
             rc = p.wait(timeout)
@@ -261,17 +285,22 @@ class Session:
         if r.returncode != 0:
             raise SandboxError(f"msb copy in failed: {r.stderr.strip()[-300:]}")
 
-    def copy_out(self, src, dest_dir):
+    def copy_out(self, src, dest_dir, max_bytes=COPY_OUT_MAX):
         """Copy one guest file into dest_dir and return its host path. The guest is untrusted, so
-        anything that does not land as a regular file (a symlink, a directory) is removed and refused."""
+        anything that does not land as a regular file (a symlink, a directory) is removed and refused,
+        and `msb copy` runs under a file size limit of max_bytes (the guest could otherwise fill the
+        host's disk), which is checked again on the result."""
         if not GUEST_PATH.fullmatch(src):
             raise SandboxError(f"guest path must be absolute: {src!r}")
         dest = os.path.join(dest_dir, posixpath_basename(src))
         if os.path.lexists(dest):
             raise SandboxError(f"refusing to overwrite {dest!r}")
-        r = self.runner._msb(self.host_commands, "copy", "-q", f"{self.name}:{src}", dest)
+        r = self.runner._msb(self.host_commands, "copy", "-q", f"{self.name}:{src}", dest, max_file_bytes=max_bytes)
         if r.returncode != 0:
-            raise SandboxError(f"msb copy out failed: {r.stderr.strip()[-300:]}")
+            if os.path.lexists(dest) and not os.path.isdir(dest):
+                os.unlink(dest)
+            raise SandboxError(f"msb copy out failed (exit {r.returncode}; a file over {max_bytes} bytes stops it): "
+                               f"{str(r.stderr).strip()[-300:]}")
         try:
             st = os.lstat(dest)
         except FileNotFoundError:
@@ -282,6 +311,9 @@ class Session:
             else:
                 os.unlink(dest)
             raise SandboxError(f"{src} is not a regular file in the guest")
+        if st.st_size > max_bytes:
+            os.unlink(dest)
+            raise SandboxError(f"{src} is larger than {max_bytes} bytes ({st.st_size})")
         return dest
 
 
@@ -297,10 +329,12 @@ class Runner:
         """Network policy for every step: the sinkhole's (egress.Sinkhole), or deny everything."""
         return self.egress.msb_args() if self.egress else ["--no-net"]
 
-    def _msb(self, log, *args, timeout=60):
+    def _msb(self, log, *args, timeout=60, max_file_bytes=None):
         argv = [self.msb, *args]
         log.append(argv)
-        return self._run(argv, timeout=timeout)
+        if max_file_bytes is None:
+            return self._run(argv, timeout=timeout)
+        return self._run(argv, timeout=timeout, max_file_bytes=max_file_bytes)
 
     def run_step(self, allow, job, step, image, argv, limits=Limits()):
         """Create a microVM from `image`, run argv in it, destroy it. Returns a StepResult.
