@@ -23,6 +23,11 @@ SUMMARY_MODEL = "deepseek-v4.1-flash-1017"
 
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_DELAY_S = 30.0
+# Requests one Client sends in its life (one run): a run asks for at most 3 plans and 3 sets of
+# edits (agent.MAX_PLAN_ATTEMPTS, loop.MAX_ATTEMPTS), and this leaves room for 2 retries. Without
+# it, 4 attempts per call made 24 billable requests possible. A request that timed out may still be
+# billed, so every request counts, answered or not.
+MAX_REQUESTS = 8
 
 
 class InferenceError(Exception):
@@ -236,14 +241,25 @@ def fetch_rates(base_url=BASE_URL, timeout=30.0):
 
 
 class Client:
+    """One run's connection to the API. `requests` records every HTTP request sent, with its status
+    (None when no response came back, a timeout say), its error and its usage (None without a
+    reply), so a run's report can count what was sent, not only what was answered. At most
+    max_requests are sent in all; after that chat() raises InferenceError without sending."""
+
     def __init__(self, api_key=None, base_url=BASE_URL, timeout=120.0, max_attempts=4,
-                 backoff=1.0, send=urllib_send, sleep=time.sleep):
+                 backoff=1.0, send=urllib_send, sleep=time.sleep, max_requests=MAX_REQUESTS):
         self._key = api_key or os.environ.get(API_KEY_ENV)
         if not self._key:
             raise InferenceError(f"set {API_KEY_ENV} in the control plane's environment")
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.timeout, self.max_attempts, self.backoff = timeout, max_attempts, backoff
+        self.max_requests, self.requests = max_requests, []
         self._send, self._sleep = send, sleep
+
+    def _record(self, model, status, error=None, usage=None):
+        self.requests.append({"model": model, "status": status,
+                              "error": None if error is None else error.replace(self._key, "***")[:300],
+                              "usage": usage})
 
     def _headers(self):
         return {"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"}
@@ -269,19 +285,29 @@ class Client:
         data = json.dumps(payload).encode()
         for attempt in range(1, self.max_attempts + 1):
             last = attempt == self.max_attempts
+            if self.max_requests is not None and len(self.requests) >= self.max_requests:
+                raise self._error(f"request limit reached: this run has sent {len(self.requests)} requests "
+                                  f"(at most {self.max_requests})")
             try:
                 status, resp_headers, body = self._send(self.url, self._headers(), data, self.timeout)
             except (OSError, http.client.HTTPException) as e:  # URLError, timeouts, resets, short reads
+                self._record(model, None, f"{type(e).__name__}: {e}")
                 if last:
                     raise self._error(f"network error after {attempt} attempts: {e}") from None
                 self._sleep(self._delay(attempt, None))
                 continue
             if status == 200:
                 try:
-                    reply = json.loads(body)
+                    reply = parse_reply(json.loads(body), tools)
                 except (ValueError, RecursionError):
+                    self._record(model, status, "response is not JSON (or nests too deeply)")
                     raise self._error("response is not JSON (or nests too deeply)", status) from None
-                return parse_reply(reply, tools)
+                except InferenceError as e:
+                    self._record(model, status, str(e))
+                    raise
+                self._record(model, status, usage=reply.usage or None)
+                return reply
+            self._record(model, status, f"HTTP {status}: {_error_message(body)}")
             if status in RETRY_STATUS and not last:
                 self._sleep(self._delay(attempt, resp_headers))
                 continue

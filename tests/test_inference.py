@@ -285,6 +285,47 @@ class Retries(unittest.TestCase):
         self.assertNotIn(KEY, str(cm.exception))
 
 
+class Ledger(unittest.TestCase):
+    """VX1 review (minor): a request that timed out was retried and left no record, so a run's cost
+    counted only the last reply of each call (four requests of the VX1 runs had no token counts);
+    and a run could send (3 + 3) x 4 = 24 billable requests."""
+
+    def test_every_request_is_recorded_with_its_outcome(self):
+        send = FakeSend(TimeoutError("The read operation timed out"), (503, {}, body("error_503.json")),
+                        (200, {}, body("no_tool.json")))
+        c, _ = client(send)
+        reply = c.chat([{"role": "user", "content": "x"}], model="glm-5.3")
+        self.assertEqual(len(c.requests), len(send.calls))
+        self.assertEqual([(r["status"], r["usage"] is None) for r in c.requests], [(None, True), (503, True), (200, False)])
+        self.assertIn("timed out", c.requests[0]["error"])
+        self.assertEqual(c.requests[2]["usage"], reply.usage)
+        self.assertEqual({r["model"] for r in c.requests}, {"glm-5.3"})
+
+    def test_a_run_sends_at_most_max_requests(self):
+        from pqproof.agent import MAX_PLAN_ATTEMPTS
+        from pqproof.loop import MAX_ATTEMPTS
+        # room for every reply a run asks for, plus a few retries, and no more
+        self.assertGreaterEqual(inference.MAX_REQUESTS, MAX_PLAN_ATTEMPTS + MAX_ATTEMPTS)
+        self.assertLessEqual(inference.MAX_REQUESTS, MAX_PLAN_ATTEMPTS + MAX_ATTEMPTS + 2)
+        send = FakeSend(*[TimeoutError("The read operation timed out")] * 40)
+        c, _ = client(send)
+        for _ in range(MAX_PLAN_ATTEMPTS + MAX_ATTEMPTS):
+            with contextlib.suppress(InferenceError):
+                c.chat([{"role": "user", "content": "x"}])
+        self.assertEqual(len(send.calls), inference.MAX_REQUESTS)
+        with self.assertRaisesRegex(InferenceError, "request limit"):
+            c.chat([{"role": "user", "content": "x"}])
+        self.assertEqual(len(send.calls), inference.MAX_REQUESTS)
+
+    def test_the_ledger_holds_no_key(self):
+        c, _ = client(FakeSend(urllib.error.URLError(f"proxy refused Bearer {KEY}"),
+                               (401, {}, json.dumps({"error": {"message": f"bad key {KEY}"}}).encode())))
+        with self.assertRaises(InferenceError):
+            c.chat([{"role": "user", "content": "x"}])
+        self.assertNotIn(KEY, json.dumps(c.requests))
+        self.assertEqual(len(c.requests), 2)
+
+
 class KeyLeaks(unittest.TestCase):
     def test_key_echoed_by_the_server_is_redacted(self):
         body_ = json.dumps({"error": {"code": 401, "message": f"Invalid API key: {KEY}"}}).encode()

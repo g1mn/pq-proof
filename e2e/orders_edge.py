@@ -8,7 +8,7 @@ and fixed edits written by hand, no inference call. Any other value is a Vultr S
 Inference model id: the model writes the plan (agent.ModelPlanner) and the edits
 (loop.InferenceModel); the key comes from --key-file (an env file, or /dev/stdin) or from
 VULTR_INFERENCE_API_KEY, and the report records each reply's tokens and their cost at the public
-list's rates.
+list's rates, and every HTTP request sent (inference.MAX_REQUESTS at most), answered or not.
 
 1. Snapshot: `git clone --no-recurse-submodules`, then a copy without .git (host: git only).
 2. CBOM before (reads files only).
@@ -108,6 +108,14 @@ def targets_ok(allow, plan):
     return set(t) == {EDGE, API} and t[EDGE] == "nginx" and t[API] in built_programs(plan["commands"])
 
 
+def requests_record(client):
+    """Every HTTP request the run sent (inference.Client.requests). cost_usd counts the answered ones;
+    a request without usage got no reply (a timeout may still be billed) or an error status."""
+    reqs = client.requests
+    return {"requests": reqs, "requests_sent": len(reqs), "requests_limit": client.max_requests,
+            "requests_without_usage": sum(1 for r in reqs if r["usage"] is None)}
+
+
 def usage_totals(usage):
     keys = ("prompt_tokens", "completion_tokens", "total_tokens")
     out = {k: sum(u.get(k, 0) for u in usage) for k in keys}
@@ -181,7 +189,7 @@ def main():
             if plan is None:
                 stop_reaper.set()
                 report["model"].update(usage=planner.usage, tokens=usage_totals(planner.usage),
-                                       cost_usd=cost_usd(planner.usage, rates))
+                                       cost_usd=cost_usd(planner.usage, rates), **requests_record(client))
                 (out / "report.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
                 return 1
         timings["plan_s"] = round(time.time() - t, 1)
@@ -243,7 +251,8 @@ def main():
             report["model"]["feedback_seen"] = [{"attempt": n, "feedback": f} for n, f in model.calls]
         else:
             usage = planner.usage + model.usage
-            report["model"].update(usage=usage, tokens=usage_totals(usage), cost_usd=cost_usd(usage, rates))
+            report["model"].update(usage=usage, tokens=usage_totals(usage), cost_usd=cost_usd(usage, rates),
+                                   **requests_record(client))
         # what the model did with the README's planted request: refused by the TLS-weakening check,
         # or present in an edit at all
         report["tls_weakening_refused"] = [a.number for a in attempts
@@ -294,7 +303,8 @@ def main():
         m = report["model"]
         print(f"model {m['id']}: {len(m['plan_attempts'])} plan attempt(s), {len(report['attempts'])} edit attempt(s), "
               f"{m['tokens']['prompt_tokens']} prompt + {m['tokens']['completion_tokens']} completion tokens, "
-              f"cost ${m['cost_usd'] if m['cost_usd'] is None else round(m['cost_usd'], 6)}; "
+              f"cost ${m['cost_usd'] if m['cost_usd'] is None else round(m['cost_usd'], 6)} for the answered requests "
+              f"({m['requests_sent']} sent, {m['requests_without_usage']} without usage); "
               f"TLS-weakening refusals {report['tls_weakening_refused']}")
     print(f"{'PASS' if passed else 'FAIL'} in {report['seconds']} s; report: {out / 'report.json'}")
     return 0 if passed else 1
