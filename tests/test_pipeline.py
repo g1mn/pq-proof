@@ -61,6 +61,20 @@ class Layout(unittest.TestCase):
                 with self.subTest(conf=conf), self.assertRaises(PipelineError):
                     tls_layout(d)
 
+    def test_a_symlinked_parent_directory_is_not_read(self):
+        # review day 2: only the last path element was lstat'ed, so nginx -> /elsewhere was followed
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as outside:
+            pathlib.Path(outside, "nginx.conf").write_text((F1 / "nginx" / "nginx.conf").read_text())
+            os.symlink(outside, pathlib.Path(d, "nginx"))
+            pathlib.Path(d, "Dockerfile").write_text("FROM x\n")
+            os.symlink(pathlib.Path(d, "Dockerfile"), pathlib.Path(outside, "Dockerfile"))
+            self.assertIsNone(pipeline._read_text(d, "nginx/nginx.conf"))
+            with self.assertRaises(PipelineError):
+                tls_layout(d)
+            self.assertIsNone(pipeline._read_text(outside, "Dockerfile"))  # a symlinked file, as before
+            os.mkfifo(pathlib.Path(d, "fifo.conf"))
+            self.assertIsNone(pipeline._read_text(d, "fifo.conf"))  # and nothing blocks
+
     def test_symlinked_config_is_not_read(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as outside:
             pathlib.Path(outside, "nginx.conf").write_text((F1 / "nginx" / "nginx.conf").read_text())

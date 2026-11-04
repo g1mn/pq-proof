@@ -25,7 +25,7 @@ import stat
 from dataclasses import dataclass
 
 from . import prove
-from .loop import BuildResult
+from .loop import BuildResult, _open_nofollow
 from .plan import Allowlist
 from .sandbox import Limits
 from .scan import dockerfile_images
@@ -51,16 +51,17 @@ class PipelineError(RuntimeError):
 
 
 def _read_text(root, rel):
-    """A snapshot file's text without following symlinks (None if absent or not a regular file)."""
-    path = os.path.join(root, *rel.split("/"))
+    """A snapshot file's text without following a symlink anywhere on its path, the directories
+    included (None if absent, not a regular file or over 1 MiB). Its text can reach the model."""
     try:
-        st = os.lstat(path)
-    except FileNotFoundError:
+        fd = _open_nofollow(os.path.realpath(root), rel, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
         return None
-    if not stat.S_ISREG(st.st_mode) or st.st_size > 1 << 20:
-        return None
-    with open(path, "rb") as f:
-        return f.read().decode("utf-8", errors="replace")
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_size > 1 << 20:
+            return None
+        return f.read(1 << 20).decode("utf-8", errors="replace")
 
 
 @dataclass(frozen=True)
