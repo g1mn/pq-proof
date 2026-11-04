@@ -85,7 +85,7 @@ On the VX1 host (x86_64) the same scripted run passed in 120.5 s. With `--model 
 python3 e2e/orders_edge.py --repo ../orders-edge --approve   # exit code 0 only if every check passes
 ```
 
-With a model id instead, the model writes the plan and the edits, and the same checks decide the run. The key comes from `--key-file` (an env file with `VULTR_INFERENCE_API_KEY=...`) or from the environment; `/dev/stdin` lets a root-only key file reach an unprivileged control plane without entering any process environment. The report records each reply's tokens and their cost at the public model list's rates.
+With a model id instead, the model writes the plan and the edits, and the same checks decide the run. The key comes from `--key-file` (an env file with `VULTR_INFERENCE_API_KEY=...`) or from the environment; `/dev/stdin` (or `-`) lets a root-only key file reach an unprivileged control plane without entering any process environment; once the key is read, file descriptor 0 is `/dev/null`, so no child process inherits the open key file, and the run's own `git` commands get `/dev/null` as standard input and only `PATH` from the environment. The report records each reply's tokens and their cost at the public model list's rates.
 
 ```sh
 sudo -u pqproof python3 e2e/orders_edge.py --repo /opt/pqproof/orders-edge/current --approve \

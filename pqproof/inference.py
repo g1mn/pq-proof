@@ -196,10 +196,17 @@ def key_from_file(path):
     allowed). path may be - or /dev/stdin, so a root-only key file can reach an unprivileged control
     plane as `< /etc/pqproof/inference.env` without entering any process environment. Standard input
     is read from file descriptor 0 itself: on Linux, opening /dev/stdin opens /proc/self/fd/0 by
-    path, which checks the key file's permissions again and fails for the unprivileged user."""
+    path, which checks the key file's permissions again and fails for the unprivileged user. After
+    that read, fd 0 is /dev/null: left open there, the key file would pass to every child process
+    started without stdin=, which can seek it back to the start and read the key (VX1 review)."""
     if str(path) in STDIN_NAMES:
         with os.fdopen(os.dup(0), encoding="utf-8") as f:
             text = f.read()
+        null = os.open(os.devnull, os.O_RDONLY)
+        try:
+            os.dup2(null, 0)
+        finally:
+            os.close(null)
     else:
         with open(path, encoding="utf-8") as f:
             text = f.read()

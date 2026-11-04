@@ -353,6 +353,39 @@ class KeysAndCost(unittest.TestCase):
                     self.assertEqual((r.returncode, r.stdout.strip()), (0, "17"), r.stderr[-300:])
                     self.assertNotIn("not-a-real-key-45", r.stdout + r.stderr)
 
+    def test_the_key_file_is_not_left_open_for_child_processes(self):
+        # VX1 review (major): the control plane read the key from fd 0 and kept the root-only key file
+        # open there; a child started without stdin= (e2e's git clone and rev-parse) could seek it back
+        # to the start and read the key. Two layers: key_from_file('-') puts /dev/null on fd 0, and the
+        # e2e run's own git children get /dev/null as stdin.
+        root = str(pathlib.Path(__file__).resolve().parent.parent)
+        child = ("import os\ntry:\n    os.lseek(0, 0, 0); data = os.read(0, 4096)\nexcept OSError:\n    data = b''\n"
+                 "print('key line on fd 0:', b'VULTR_INFERENCE_API_KEY=' in data)\n")
+        fake_git = "#!" + sys.executable + " -I\nimport os, sys\n" + child.replace("print(", "print(sys.argv[1], ") + \
+            "if sys.argv[1] == 'clone':\n    os.makedirs(sys.argv[-1])\nelse:\n    print('0' * 40)\n"
+        reads_key = (f"import subprocess, sys; sys.path.insert(0, {root!r}); from pqproof.inference import key_from_file; "
+                     "key_from_file('-'); subprocess.run([sys.executable, '-I', '-c', sys.argv[1]])")
+        snapshots = (f"import importlib.util, os, sys; spec = importlib.util.spec_from_file_location('e2e', {root!r} + "
+                     "'/e2e/orders_edge.py'); e2e = importlib.util.module_from_spec(spec); spec.loader.exec_module(e2e); "
+                     "os.environ['PATH'] = sys.argv[1] + ':' + os.environ['PATH']; "
+                     "print('rev-parse:', e2e.snapshot('/nonexistent', sys.argv[2], e2e.Recorder()))")
+        with tempfile.TemporaryDirectory() as d:
+            key = pathlib.Path(d, "inference.env")
+            key.write_text("VULTR_INFERENCE_API_KEY=not-a-real-key-46\n")
+            bin_dir = pathlib.Path(d, "bin")
+            bin_dir.mkdir()
+            pathlib.Path(bin_dir, "git").write_text(fake_git)
+            os.chmod(bin_dir / "git", 0o755)
+            for name, argv in (("after key_from_file('-')", [reads_key, child]),
+                               ("e2e snapshot's git", [snapshots, str(bin_dir), os.path.join(d, "snap")])):
+                with self.subTest(name), open(key) as stdin:
+                    r = subprocess.run([sys.executable, "-I", "-c", *argv], stdin=stdin, capture_output=True, text=True,
+                                       timeout=60)
+                    lines = [ln for ln in r.stdout.splitlines() if "key line on fd 0" in ln]
+                    self.assertTrue(lines, r.stdout + r.stderr[-500:])
+                    self.assertTrue(all(ln.endswith("False") for ln in lines), lines)
+                    self.assertNotIn("not-a-real-key-46", r.stdout + r.stderr)
+
     def test_rates_from_the_model_list_and_cost(self):
         body = {"data": [{"id": "glm-5.3", "input_modalities": [{"pricing": [{"cost_usd": "0.00000075"}]}],
                           "output_modalities": [{"pricing": [{"type": "completion", "cost_usd": "0.000003"}]}]},

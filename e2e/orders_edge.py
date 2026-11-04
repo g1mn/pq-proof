@@ -74,8 +74,12 @@ def snapshot(repo, dest, rec):
     clone = dest + ".clone"
     argv = ["git", "clone", "-q", "--no-recurse-submodules", "--no-hardlinks", os.fspath(repo), clone]
     rec.argvs.append(argv)
-    subprocess.run(argv, check=True, env={"PATH": os.environ.get("PATH", ""), "GIT_TERMINAL_PROMPT": "0"})
-    commit = subprocess.run(["git", "-C", clone, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    # stdin=DEVNULL: with --key-file -, fd 0 may be the key file; and only PATH from the environment,
+    # which may hold VULTR_INFERENCE_API_KEY: no child of the control plane gets the key
+    env = {"PATH": os.environ.get("PATH", ""), "GIT_TERMINAL_PROMPT": "0"}
+    subprocess.run(argv, check=True, stdin=subprocess.DEVNULL, env=env)
+    commit = subprocess.run(["git", "-C", clone, "rev-parse", "HEAD"], check=True, stdin=subprocess.DEVNULL, env=env,
+                            capture_output=True, text=True).stdout.strip()
     rec.argvs.append(["git", "-C", clone, "rev-parse", "HEAD"])
     shutil.copytree(clone, dest, symlinks=True, ignore=shutil.ignore_patterns(".git"))
     return commit
@@ -190,7 +194,11 @@ def main():
             print(f"  run   {' '.join(c)}")
         for tg in plan["targets"]:
             print(f"  probe {tg['addr']} (must be served by {tg['server']})")
-        if not args.approve and input("Approve this plan? [y/N] ").strip().lower() != "y":
+        try:  # with the key on standard input, fd 0 is /dev/null by now: no answer means no
+            answer = "y" if args.approve else input("Approve this plan? [y/N] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() != "y":
             print("not approved")
             stop_reaper.set()
             return 2
