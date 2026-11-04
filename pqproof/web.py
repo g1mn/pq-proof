@@ -20,12 +20,23 @@ starter(repo, ip, done) function runs an admitted job, returns its run id and ca
 job ends (done releases the gate). The default gate refuses every live run and there is no
 starter, so this server only shows recorded runs. It binds 127.0.0.1 unless told otherwise; the client IP a gate sees is
 the socket's peer, so a reverse proxy in front must be accounted for when C20 counts per IP.
+
+Slow clients cannot hold it (day-3 review: 1,100 connections that sent a byte every 10 s left it
+with 1,021 threads and no answer for anyone): at most MAX_CONNECTIONS are served at once and the
+next one gets 503 at once, a client that has not sent its whole request within
+REQUEST_DEADLINE_S is dropped, and no connection lasts longer than CONNECTION_DEADLINE_S. Limits
+per client (connections and requests per IP) belong to the front end that faces the internet.
+A run's verification is kept until a file in its receipt directory changes (size, mtime, ctime,
+inode), so repeated requests do not hash the receipt again.
 """
 import argparse
 import json
 import os
 import re
+import socket
 import stat
+import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
@@ -39,6 +50,13 @@ STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": 
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 SEGMENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,119}")
 MAX_BODY = 4096
+MAX_CONNECTIONS = 64  # served at once; the next one gets 503 at once
+REQUEST_DEADLINE_S = 10.0  # to send the request line, the headers and the body
+CONNECTION_DEADLINE_S = 30.0  # for the whole exchange, a client that reads slowly included
+BUSY = (b"HTTP/1.0 503 Service Unavailable\r\nContent-Type: application/json; charset=utf-8\r\n"
+        b"Content-Length: 27\r\nConnection: close\r\nRetry-After: 5\r\n\r\n{\"error\": \"server is busy\"}")
+# C0 and C1 control characters, as http.server escapes them in its own log lines (3.12+)
+CONTROL = str.maketrans({c: f"\\x{c:02x}" for c in [*range(0x20), *range(0x7f, 0xa0)]})
 MAX_REPO = 300
 PAGE_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; "
             "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
@@ -110,9 +128,42 @@ def list_runs(runs):
     return sorted(out, key=lambda s: (str(s["started_at"]), s["id"]), reverse=True)
 
 
-def run_detail(runs, run_id):
+def fingerprint(root):
+    """What verify() read, as metadata: every entry under root (not following symlinks)."""
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in dirnames + filenames:
+            st = os.lstat(os.path.join(dirpath, name))
+            out.append((os.path.relpath(os.path.join(dirpath, name), root), st.st_mode, st.st_size, st.st_mtime_ns,
+                        st.st_ctime_ns, st.st_ino))
+    return tuple(sorted(out))
+
+
+class VerifyCache:
+    """receipt.verify() results by run, kept while the receipt directory's fingerprint holds."""
+
+    def __init__(self, size=256):
+        self.size, self.items, self.lock = size, {}, threading.Lock()
+
+    def results(self, root):
+        key = fingerprint(root)
+        with self.lock:
+            hit = self.items.get(root)
+        if hit and hit[0] == key:
+            return hit[1]
+        results = receipt.verify(root)
+        if fingerprint(root) == key:  # unchanged while it was read
+            with self.lock:
+                if len(self.items) >= self.size:
+                    self.items.pop(next(iter(self.items)))
+                self.items[root] = (key, results)
+        return results
+
+
+def run_detail(runs, run_id, cache=None):
     r = load_receipt(runs, run_id)
-    results = receipt.verify(os.path.join(runs, run_id, "receipt"))
+    root = os.path.join(runs, run_id, "receipt")
+    results = cache.results(root) if cache else receipt.verify(root)
     base = f"/runs/{run_id}/receipt/"
     return {"id": run_id, "receipt": r,
             "verification": {"ok": all(ok for ok, _ in results), "checks": len(results),
@@ -141,10 +192,10 @@ def receipt_file(runs, run_id, rel):
 class Handler(BaseHTTPRequestHandler):
     server_version = "pq-proof"
     sys_version = ""
-    timeout = 15  # a client that sends nothing is dropped
+    timeout = 10  # one read; the server's deadlines bound the whole request and connection
 
-    def log_message(self, fmt, *args):  # one short line per request, never a body
-        self.server.log(f"{self.client_address[0]} {fmt % args}")
+    def log_message(self, fmt, *args):  # one short line per request, never a body, no control characters
+        self.server.log(f"{self.client_address[0]} {fmt % args}".translate(CONTROL))
 
     def send(self, status, body, ctype, csp=FILE_CSP, head_only=False):
         self.send_response(status)
@@ -166,6 +217,7 @@ class Handler(BaseHTTPRequestHandler):
     def route_get(self, head_only=False):
         path = urlsplit(self.path).path
         runs = self.server.runs
+        self.server.request_read(self.connection)
         if path in STATIC_FILES:
             name, ctype = STATIC_FILES[path]
             with open(os.path.join(STATIC, name), "rb") as f:
@@ -174,7 +226,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(HTTPStatus.OK, {"runs": list_runs(runs), "live_runs": self.server.live_note}, head_only)
         m = re.fullmatch(r"/api/runs/([^/]+)", path)
         if m:
-            return self.json(HTTPStatus.OK, run_detail(runs, unquote(m[1])), head_only)
+            return self.json(HTTPStatus.OK, run_detail(runs, unquote(m[1]), self.server.verified), head_only)
         m = re.fullmatch(r"/runs/([^/]+)/receipt/(.+)", path)
         if m:
             data, ctype, csp = receipt_file(runs, unquote(m[1]), unquote(m[2]))
@@ -206,13 +258,15 @@ class Handler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path != "/api/runs":
             raise WebError(HTTPStatus.NOT_FOUND, "not found")
         length = self.headers.get("Content-Length")
-        if length is None or not length.isdigit():
+        if length is None or not (length.isascii() and length.isdigit()):
             raise WebError(HTTPStatus.LENGTH_REQUIRED, "Content-Length required")
         if int(length) > MAX_BODY:
             raise WebError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"at most {MAX_BODY} bytes")
         try:
-            body = json.loads(self.rfile.read(int(length)).decode("utf-8"))
-        except (UnicodeDecodeError, ValueError):
+            data = self.rfile.read(int(length))
+            self.server.request_read(self.connection)
+            body = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError):
             raise WebError(HTTPStatus.BAD_REQUEST, "body must be JSON") from None
         repo = body.get("repo") if isinstance(body, dict) else None
         if not isinstance(repo, str) or not repo or len(repo) > MAX_REPO or not repo.isprintable():
@@ -248,10 +302,99 @@ class Server(ThreadingHTTPServer):
         super().__init__(addr, Handler)
         self.runs, self.gate, self.starter, self.quiet = os.path.realpath(runs), gate or Gate(), starter, quiet
         self.live_note = "off: recorded runs only" if starter is None else "on, limited"
+        self.verified = VerifyCache()
+        self.slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        self.request_deadline, self.connection_deadline = REQUEST_DEADLINE_S, CONNECTION_DEADLINE_S
+        self.deadlines, self.deadlines_lock, self.closed = {}, threading.Lock(), threading.Event()
+        self.refused = []  # (close at, socket): a 503 sent, closed a moment later so it is read, not reset
+        threading.Thread(target=self._watch, name="pqproof-web-deadlines", daemon=True).start()
 
     def log(self, line):
         if not self.quiet:
             print(line, flush=True)
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self._refuse(request)
+            return
+        now = time.monotonic()
+        with self.deadlines_lock:
+            self.deadlines[request] = [now + self.request_deadline, now + self.connection_deadline]
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._done(request)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._done(request)
+
+    def _done(self, request):
+        with self.deadlines_lock:
+            self.deadlines.pop(request, None)
+        self.slots.release()
+
+    def _refuse(self, request):
+        """503 without a thread. The request is drained first and the socket closed a second later
+        by the watchdog: closing with unread input would reset the connection before the client
+        reads the answer."""
+        try:
+            request.setblocking(False)
+            _drain(request)
+            request.send(BUSY)
+            request.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        with self.deadlines_lock:
+            if len(self.refused) < MAX_CONNECTIONS:
+                self.refused.append((time.monotonic() + 1.0, request))
+                return
+        request.close()
+
+    def request_read(self, request):
+        """The client has sent its whole request: only the connection deadline applies now."""
+        with self.deadlines_lock:
+            if request in self.deadlines:
+                self.deadlines[request][0] = float("inf")
+
+    def _watch(self):
+        while not self.closed.wait(0.2):
+            now = time.monotonic()
+            with self.deadlines_lock:
+                late = [r for r, (read_by, end_by) in self.deadlines.items() if now > min(read_by, end_by)]
+                for r in late:
+                    self.deadlines[r] = [float("inf"), float("inf")]  # shut down once
+                done = [r for at, r in self.refused if at <= now]
+                self.refused = [(at, r) for at, r in self.refused if at > now]
+            for r in done:
+                _drain(r)
+                r.close()
+            for r in late:
+                try:
+                    r.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    def server_close(self):
+        self.closed.set()
+        with self.deadlines_lock:
+            refused, self.refused = self.refused, []
+        for _, r in refused:
+            r.close()
+        super().server_close()
+
+
+def _drain(sock, rounds=16):
+    """Read what a non-blocking socket holds now (at most rounds * 64 KiB)."""
+    try:
+        for _ in range(rounds):
+            if not sock.recv(65536):
+                return
+    except OSError:
+        pass
 
 
 def main(argv):

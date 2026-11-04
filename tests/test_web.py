@@ -5,10 +5,13 @@ import os
 import pathlib
 import re
 import shutil
+import socket
 import tempfile
 import threading
+import time
 import unittest
 from http import HTTPStatus
+from unittest import mock
 
 from pqproof import receipt, web
 from test_receipt import make_run
@@ -142,6 +145,104 @@ class Server(unittest.TestCase):
         c.endheaders()
         self.assertEqual(c.getresponse().status, HTTPStatus.LENGTH_REQUIRED)
         c.close()
+
+
+def raw(port, data, timeout=5):
+    """Send bytes as they are, read until the server closes or timeout."""
+    s = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+    s.sendall(data)
+    out = b""
+    try:
+        while chunk := s.recv(65536):
+            out += chunk
+    except socket.timeout:
+        pass
+    s.close()
+    return out
+
+
+class Abuse(unittest.TestCase):
+    """Day-3 review: slow clients, odd request lines and headers, a verification on every request."""
+
+    def serve(self, runs=None):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        srv = web.Server(("127.0.0.1", 0), runs or d.name, quiet=True)
+        self.lines = []
+        srv.log = self.lines.append
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return srv
+
+    def test_slow_clients_cannot_hold_the_server(self):
+        # the review held 1,100 connections that sent a byte every 10 s: 1,021 threads, 1,056 open
+        # files, and no answer for anyone until they closed
+        with mock.patch.object(web, "MAX_CONNECTIONS", 8, create=True), \
+                mock.patch.object(web, "REQUEST_DEADLINE_S", 1.0, create=True):
+            srv = self.serve()
+        port, threads = srv.server_address[1], threading.active_count()
+        slow = []
+        for _ in range(30):
+            s = socket.create_connection(("127.0.0.1", port), timeout=5)
+            s.sendall(b"GET /api/ru")
+            slow.append(s)
+        self.addCleanup(lambda: [s.close() for s in slow])
+        time.sleep(0.3)
+        self.assertLessEqual(threading.active_count() - threads, 8 + 2)  # handler threads are capped
+        busy = raw(port, b"GET /api/runs HTTP/1.0\r\n\r\n").split(b"\r\n", 1)[0]
+        self.assertIn(busy, (b"HTTP/1.0 503 Service Unavailable", b"HTTP/1.0 200 OK"))  # an answer, at once
+        time.sleep(1.8)  # past the deadline for sending a request: the slow ones are dropped
+        for s in slow[:8]:
+            s.settimeout(2)
+            try:
+                rest = s.recv(100)
+            except OSError:
+                rest = b""
+            self.assertNotIn(b"200", rest)
+        self.assertEqual(raw(port, b"GET /api/runs HTTP/1.0\r\n\r\n").split(b"\r\n", 1)[0], b"HTTP/1.0 200 OK")
+
+    def test_log_lines_carry_no_control_characters(self):
+        srv = self.serve()
+        raw(srv.server_address[1], b"GET /\x1b]0;owned\x07\x1b[2J\rFAKE 200 HTTP/1.1\r\nHost: x\r\n\r\n")
+        time.sleep(0.2)
+        self.assertTrue(self.lines)
+        self.assertEqual([ln for ln in self.lines if any(ord(c) < 32 or 127 <= ord(c) < 160 for c in ln)], [])
+
+    def test_an_odd_content_length_is_a_client_error(self):
+        srv = self.serve()
+        for value in (b"\xb2", "\u0663".encode(), b"-1", b"1e3"):  # superscript two, Arabic-Indic three
+            with self.subTest(value=value):
+                head = raw(srv.server_address[1], b"POST /api/runs HTTP/1.1\r\nHost: x\r\nContent-Length: " + value
+                           + b"\r\n\r\n{}").split(b"\r\n", 1)[0]
+                self.assertEqual(head, b"HTTP/1.0 411 Length Required")
+
+    def test_a_receipt_is_verified_again_only_when_its_files_change(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        report, log_dir = make_run(d.name)
+        runs = os.path.join(d.name, "runs")
+        r = receipt.build(report, log_dir, os.path.join(runs, "e2e-1", "receipt"))
+        srv = self.serve(runs)
+        calls = []
+        real = receipt.verify
+
+        def counted(root):
+            calls.append(root)
+            return real(root)
+
+        def check():
+            c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+            c.request("GET", "/api/runs/e2e-1")
+            out = json.loads(c.getresponse().read())["verification"]["ok"]
+            c.close()
+            return out
+        with mock.patch.object(receipt, "verify", counted):
+            self.assertEqual([check(), check(), check()], [True, True, True])
+            self.assertEqual(len(calls), 1)
+            pathlib.Path(runs, "e2e-1", "receipt", r["proofs"][0]["log"]).write_text("forged\n")
+            self.assertFalse(check())
+            self.assertEqual(len(calls), 2)
 
 
 class LiveGate(unittest.TestCase):
