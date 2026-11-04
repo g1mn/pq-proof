@@ -154,7 +154,9 @@ class Receipt(unittest.TestCase):
         self.assertEqual([e["canaries"] for e in hit["reached_sinkhole"]], [["CANARY-0001"]])
         self.assertEqual(hit["reached_sinkhole_not_kept"], 2)
         self.assertEqual(hit["dropped_by_policy"], "not counted")
-        self.assertNotIn("\x1b", hit["reached_sinkhole"][0]["preview"])  # control characters are replaced
+        preview = hit["reached_sinkhole"][0]["preview"]
+        self.assertNotIn("\x1b", preview)  # control characters are replaced; HTTP line breaks stay line breaks
+        self.assertEqual((preview.count("\ufffd"), preview.count("\r"), preview.count("\n")), (1, 0, 3))
         self.assertEqual(sum(len(s["egress"]["reached_sinkhole"]) for s in sb.values()), 1)
         c = self.receipt["containment"]
         self.assertEqual((c["canaries_caught"], c["reached_sinkhole"], c["reached_sinkhole_not_kept"]), (["CANARY-0001"], 1, 2))

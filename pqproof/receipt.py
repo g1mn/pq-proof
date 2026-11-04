@@ -260,7 +260,7 @@ def _sandbox(step, rec, images, art, log_dir):
                       "stdout": e["stdout"], "stderr": e["stderr"], "log": log, "log_sha256": log_sha})
     events = [{"kind": ev["kind"], "proto": ev["proto"], "dest": clean_text(ev["dest"], MAX_PREVIEW),
                "bytes": ev["bytes"], "sha256": ev["sha256"], "canaries": list(ev["canaries"]),
-               "preview": clean_text(ev.get("preview", ""))[:MAX_PREVIEW], "at": iso(ev["t"])}
+               "preview": clean_text(str(ev.get("preview", "")).replace("\r\n", "\n"))[:MAX_PREVIEW], "at": iso(ev["t"])}
               for ev in rec["egress"]["sinkhole_events"]]
     return {"id": rec["sandbox"], "step": step, "image": image, "image_digest": image.rpartition("@")[2],
             "platform_digest": resolved["digest"] if resolved else None,
