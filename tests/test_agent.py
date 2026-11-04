@@ -174,6 +174,24 @@ class Drafts(Snapshot):
             with self.subTest(reason=reason), self.assertRaisesRegex(PlanError, reason):
                 check_draft({**PLAN, "commands": build + run}, self.dockerfile)
 
+    def test_every_problem_is_reported_at_once(self):
+        # glm-5.3's first plan in the VX1 run e2e-glm-2 (11-04): it builds with make, probes "api", and
+        # lists only the images after the edits. Told one reason per reply, it needed all 3 attempts.
+        conf = "/work/src/nginx/nginx.conf"
+        plan = {**PLAN, "commands": [["make", "test"], ["make", "build"], ["nginx", "-t", "-c", conf], ["api"],
+                                     ["nginx", "-c", conf]],
+                "images": ["golang:1.27-bookworm", "nginx:1.30-trixie"]}
+        with self.assertRaises(PlanError) as ctx:
+            check_draft(plan, self.dockerfile)
+        self.assertIn("target server must be nginx or a program this plan builds", str(ctx.exception))
+        self.assertIn("the Dockerfile names nginx:1.28-bookworm (line", str(ctx.exception))
+
+    def test_malformed_fields_are_a_plan_error_not_a_crash(self):
+        for field, value in (("targets", 5), ("targets", "127.0.0.1:8443"), ("commands", 5), ("commands", [5]),
+                             ("targets", [5]), ("commands", None)):
+            with self.subTest(field=field, value=value), self.assertRaises(PlanError):
+                check_draft({**PLAN, field: value}, self.dockerfile)
+
     def test_plan_tool_matches_the_plan_schema(self):
         params = PLAN_TOOL["function"]["parameters"]
         self.assertEqual(params["properties"]["version"], {"type": "integer", "enum": [1]})

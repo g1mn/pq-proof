@@ -200,20 +200,29 @@ def shown_image(image):
 def check_draft(plan, dockerfile_text=None):
     """compile_allowlist on a model's plan before its images are pinned, plus: every image the
     Dockerfile names must be listed, and the prove commands must be the ones the prove step runs
-    (pipeline.runtime_problem). Returns the Allowlist; raises PlanError."""
+    (pipeline.runtime_problem). Returns the Allowlist; raises PlanError with every problem found,
+    one per line, so one reply can fix them all (told one reason per reply, glm-5.3 used up all
+    MAX_PLAN_ATTEMPTS on VX1)."""
     if not isinstance(plan, dict) or not isinstance(plan.get("images"), list):
         raise PlanError("images must be a list of name:tag strings")
     for img in plan["images"]:
         if not isinstance(img, str) or not IMAGE_TAG.fullmatch(img) or img.endswith(":latest"):
             raise PlanError(f"image must be a Docker Hub official name:tag, without a digest, not latest: {img!r}")
-    allow = compile_allowlist({**plan, "images": [i + PLACEHOLDER_DIGEST for i in plan["images"]]})
+    problems, allow = [], None
+    try:
+        allow = compile_allowlist({**plan, "images": [i + PLACEHOLDER_DIGEST for i in plan["images"]]})
+    except PlanError as e:
+        problems.append(str(e))
     for line, image, _ in dockerfile_images(dockerfile_text or ""):
         if image not in plan["images"]:
-            raise PlanError(f"the Dockerfile names {shown_image(image)} (line {line}); list every image it uses before "
+            problems.append(f"the Dockerfile names {shown_image(image)} (line {line}); list every image it uses before "
                             f"and after the edits in images")
-    problem = runtime_problem(plan)
-    if problem:
-        raise PlanError(problem)
+    if isinstance(plan.get("commands"), list) and isinstance(plan.get("targets"), list):  # else compile_allowlist said so
+        problem = runtime_problem(plan)
+        if problem:
+            problems.append(problem)
+    if problems:
+        raise PlanError("\n".join(dict.fromkeys(problems)))
     return allow
 
 
