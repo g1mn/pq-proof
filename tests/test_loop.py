@@ -5,12 +5,13 @@ import os
 import pathlib
 import subprocess
 import tempfile
+import threading
 import unittest
 
 from helpers import msb_available
 from pqproof.images import resolve
 from pqproof.inference import parse_reply
-from pqproof.loop import (MAX_ATTEMPTS, PATCH_TOOL, BuildResult, EditError, InferenceModel, ScriptedModel,
+from pqproof.loop import (MAX_ATTEMPTS, MAX_EDIT_FILE, PATCH_TOOL, BuildResult, EditError, InferenceModel, ScriptedModel,
                           apply_edits, run_loop, unified_diff)
 from pqproof.plan import Allowlist, PlanError
 from pqproof.sandbox import MSB
@@ -101,6 +102,41 @@ class ApplyEdits(Snapshot):
     def test_directory_and_missing_file(self):
         self.refused({"path": "nginx", "old": "a", "new": "b"})
         self.refused({"path": "missing.conf", "old": "a", "new": "b"})
+
+    # review day 2: odd files at an approved path must be a refused edit, never a crash or a write elsewhere
+    def test_hard_link_is_refused(self):
+        os.unlink(self.root / "nginx" / "nginx.conf")
+        os.link(self.outside / "secret.conf", self.root / "nginx" / "nginx.conf")
+        self.assertIn("hard link", self.refused({"path": "nginx/nginx.conf", "old": "prime256v1", "new": "PWNED"}))
+        self.assertEqual((self.outside / "secret.conf").read_text(), "ssl_ecdh_curve prime256v1;\n")
+
+    def test_fifo_is_refused_without_blocking(self):
+        os.unlink(self.root / "nginx" / "nginx.conf")
+        os.mkfifo(self.root / "nginx" / "nginx.conf")
+        box = {}
+        t = threading.Thread(target=lambda: box.setdefault("msg", self.refused({"path": "nginx/nginx.conf", "old": "a", "new": "b"})),
+                             daemon=True)
+        t.start()
+        t.join(5)
+        self.assertFalse(t.is_alive(), "apply_edits blocked on a FIFO")
+        self.assertIn("not a regular file", box.get("msg", ""))
+
+    def test_non_utf8_file_is_refused(self):
+        (self.root / "nginx" / "nginx.conf").write_bytes(b"ssl_ecdh_curve prime256v1; \xff\xfe\n")
+        self.assertIn("UTF-8", self.refused({"path": "nginx/nginx.conf", "old": "prime256v1", "new": "X"}))
+
+    def test_result_size_is_capped(self):
+        big = "x" * (MAX_EDIT_FILE + 1)
+        self.assertIn("bytes", self.refused({"path": "nginx/nginx.conf", "old": "prime256v1", "new": big}))
+        self.assertEqual((self.root / "nginx" / "nginx.conf").read_text(), "ssl_ecdh_curve prime256v1;\n")
+
+    def test_odd_files_are_a_failed_attempt_not_a_crash(self):
+        (self.root / "nginx" / "nginx.conf").write_bytes(b"\xff prime256v1\n")
+        with tempfile.TemporaryDirectory() as scratch:
+            out = run_loop(ScriptedModel([[{"path": "nginx/nginx.conf", "old": "prime256v1", "new": "X"}]]), str(self.root),
+                           allow_paths("nginx/nginx.conf"), lambda w, n: BuildResult(ok=True), scratch)
+        self.assertFalse(out.ok)
+        self.assertTrue(out.attempts[0].result.raw_error.startswith("edit refused"))
 
 
 GOOD = [{"path": "go.mod", "old": "go 1.22", "new": "go 1.27"}]

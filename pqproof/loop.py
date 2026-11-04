@@ -7,7 +7,9 @@ of edits to it, so a failed attempt leaves nothing behind. An edit is {"path", "
 - os.path.realpath of the target must be the target itself, inside the snapshot: no symlink
   anywhere on the path, not even one that points back inside;
 - the file is then opened one directory at a time with O_NOFOLLOW (dir_fd), so a symlink that
-  appears between the check and the write still cannot be followed, and it must be a regular file.
+  appears between the check and the write still cannot be followed, and it must be a regular
+  UTF-8 file with a single link (a hard link would carry the write elsewhere), under MAX_EDIT_FILE
+  bytes before and after the edit. Anything else is an EditError: a failed attempt, not a crash.
 A patch that weakens TLS (verify.weakening: InsecureSkipVerify, proxy_ssl_verify off or its
 `on` line deleted, ...) is refused like an edit that does not apply: a failed attempt, never built,
 with the reason as feedback.
@@ -68,23 +70,50 @@ def apply_edits(root, edits, allow):
         if os.path.realpath(target) != target:
             raise EditError(f"refusing {path}: a symlink is on its path (it resolves to {os.path.realpath(target)})")
         try:
-            fd = _open_nofollow(root_real, path, os.O_RDWR)
+            # O_NONBLOCK: opening a FIFO must not wait for a writer; it is refused below.
+            fd = _open_nofollow(root_real, path, os.O_RDWR | os.O_NONBLOCK)
         except OSError as err:
             raise EditError(f"refusing {path}: {err.strerror}") from None
-        with os.fdopen(fd, "r+b") as f:
-            st = os.fstat(f.fileno())
-            if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_EDIT_FILE:
-                raise EditError(f"refusing {path}: not a regular file under {MAX_EDIT_FILE} bytes")
-            before = f.read().decode("utf-8")
-            text = changed.get(path, (before, before))[1]
-            if not e["old"] or text.count(e["old"]) != 1:
-                raise EditError(f"'old' must occur exactly once in {path} (found {text.count(e['old']) if e['old'] else 'empty'})")
-            after = text.replace(e["old"], e["new"], 1)
-            f.seek(0)
-            f.write(after.encode("utf-8"))
-            f.truncate()
+        try:
+            before, after = _edit_fd(fd, path, e, changed)
+        except OSError as err:
+            raise EditError(f"refusing {path}: {err.strerror or err}") from None
+        finally:
+            os.close(fd)
         changed[path] = (changed.get(path, (before,))[0], after)
     return changed
+
+
+def _edit_fd(fd, path, e, changed):
+    """(text before, text after) of one edit, written through fd. Refuses anything but a regular
+    UTF-8 file with one link, and a result over MAX_EDIT_FILE bytes."""
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_EDIT_FILE:
+        raise EditError(f"refusing {path}: not a regular file under {MAX_EDIT_FILE} bytes")
+    if st.st_nlink != 1:  # a hard link would carry the write to another path, maybe outside the snapshot
+        raise EditError(f"refusing {path}: it is a hard link ({st.st_nlink} names for one file)")
+    data = b""
+    while chunk := os.read(fd, 1 << 16):
+        data += chunk
+        if len(data) > MAX_EDIT_FILE:
+            raise EditError(f"refusing {path}: larger than {MAX_EDIT_FILE} bytes")
+    try:
+        before = data.decode("utf-8")
+    except UnicodeDecodeError as err:
+        raise EditError(f"refusing {path}: not UTF-8 text ({err.reason} at byte {err.start})") from None
+    text = changed.get(path, (before, before))[1]
+    if not e["old"] or text.count(e["old"]) != 1:
+        raise EditError(f"'old' must occur exactly once in {path} (found {text.count(e['old']) if e['old'] else 'empty'})")
+    after = text.replace(e["old"], e["new"], 1)
+    out = after.encode("utf-8")
+    if len(out) > MAX_EDIT_FILE:
+        raise EditError(f"refusing {path}: the edit makes it {len(out)} bytes, over {MAX_EDIT_FILE} bytes")
+    os.lseek(fd, 0, os.SEEK_SET)
+    view = memoryview(out)
+    while view:
+        view = view[os.write(fd, view):]
+    os.ftruncate(fd, len(out))
+    return before, after
 
 
 def unified_diff(changed):
