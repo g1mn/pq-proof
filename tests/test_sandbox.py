@@ -224,6 +224,24 @@ class BoundedOutput(unittest.TestCase):
         self.assertEqual(res.stdout.sha256, hashlib.sha256(b"out\n").hexdigest())
 
 
+def vmm_processes(marker):
+    """Command line and environment of each msb VMM process ("msb machine --name pq-...") whose
+    command line holds marker. macOS: `ps -wwE`. Linux procps has no -E, so /proc/PID/environ."""
+    if not sys.platform.startswith("linux"):
+        ps = subprocess.run(["ps", "-wwE", "-ax", "-o", "command"], capture_output=True, text=True).stdout
+        return [line for line in ps.splitlines() if "msb machine --name pq-" in line and marker in line]
+    out = []
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            cmd = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            if "msb machine --name pq-" in cmd and marker in cmd:
+                env = pathlib.Path(f"/proc/{pid}/environ").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+                out.append(f"{cmd} {env}")
+        except OSError:  # gone, or not ours
+            continue
+    return out
+
+
 class Environment(unittest.TestCase):
     """msb hands its environment to each sandbox's VMM process; the API key must not be in it."""
 
@@ -391,8 +409,7 @@ class RealMsb(unittest.TestCase):
             step = threading.Thread(target=lambda: self.step("env", argv, Limits(memory_mib=256, wall_clock_s=30)))
             step.start()
             while step.is_alive():
-                ps = subprocess.run(["ps", "-wwE", "-ax", "-o", "command"], capture_output=True, text=True).stdout
-                seen += [line for line in ps.splitlines() if "msb machine --name pq-" in line and "-itest-env-" in line]
+                seen += vmm_processes("-itest-env-")
                 time.sleep(0.2)
             step.join()
         finally:

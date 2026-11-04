@@ -208,6 +208,10 @@ class FakeControlPlane:
             c.close()
 
     def close(self):
+        try:  # Linux: close() alone does not wake the thread blocked in accept()
+            self.srv.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         self.srv.close()
 
 
