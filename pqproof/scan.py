@@ -14,9 +14,15 @@ Each row is one place that matters for the migration:
 - signature: RSA or ECDSA signatures (JWT, certificates). Reported, never patched: signature
   migration is out of scope.
 Rows are static findings. Whether a server really negotiates X25519MLKEM768 is decided by the
-probe (prove.py), not by this module. Comments are blanked before matching (line numbers stay), so a
-commented-out pin is not a row. nginx directives are read to their `;`, across lines. Go group
-lists are read wherever a []tls.CurveID literal appears (field, assignment or variable). A runtime
+probe (prove.py), not by this module. Each file is read the way its parser reads it, with the same
+readers as the TLS-weakening check (verify.py), so a commented-out pin is not a row and a comment
+marker inside a word or a string hides nothing: nginx through nginx's own tokenizer (a `#` starts a
+comment only where a word could start, quotes are resolved, a directive runs to its `;` across
+lines, and text inside another directive's quoted value is not a directive); Go and go.mod with
+comments removed outside string and rune literals (`//go:` directives stay), and Go code rules
+matched outside literals; other files with lines that start with `#` as comments. Line numbers are
+the file's own. Go group lists are read wherever a []tls.CurveID literal appears (field,
+assignment or variable). A runtime
 image whose tag names no known distribution gets blocks_hybrid None: unknown, not "does not block".
 Row text goes into the model's context, so text taken from the repo is bounded: group names and
 image references outside a narrow character set or length read "unrecognized".
@@ -25,6 +31,8 @@ import os
 import re
 import stat
 from dataclasses import asdict, dataclass, replace
+
+from . import verify
 
 MAX_FILE = 1 << 20
 PATH_SAFE = re.compile(r"[A-Za-z0-9._/-]{1,200}")
@@ -50,8 +58,6 @@ DISTRO_OPENSSL = [
     (re.compile(r"(^|-)trixie($|-)"), "Debian 13 (trixie) ships OpenSSL 3.5, which has ML-KEM", True),
 ]
 
-NGINX_GROUPS = re.compile(r"(?:^|[;{}\s])((?:ssl_ecdh_curve)|(?:proxy_)?ssl_conf_command\s+(?:Groups|Curves))\s+([^;{}]+);",
-                          re.I)
 GO_CURVE_LIST = re.compile(r"\[\]tls\.CurveID\s*\{([^}]*)\}")
 GO_MOD_GODEBUG = re.compile(r"^[ \t]*godebug[ \t]+(?:\(([^)]*)\)|(\S+))", re.M)
 GO_DEBUG_DIRECTIVE = re.compile(r"^//go:debug[ \t]+(\S+)", re.M)
@@ -83,19 +89,6 @@ class Row:
 
 def _line_of(text, pos):
     return text.count("\n", 0, pos) + 1
-
-
-def _blank(m):
-    return re.sub(r"[^\n]", " ", m[0])
-
-
-def blank_comments(text, style):
-    """Comments replaced by spaces, newlines kept (line numbers stay). style: "slash" for Go and
-    go.mod (// and /* */; "//go:" directives are kept), "hash" for nginx, shell, YAML, Dockerfile."""
-    if style == "slash":
-        text = re.sub(r"/\*.*?\*/", _blank, text, flags=re.S)
-        return re.sub(r"(?<![:\"'])//(?!go:)[^\n]*", _blank, text)
-    return re.sub(r"#[^\n]*", _blank, text)
 
 
 def _group(name, table):
@@ -145,35 +138,45 @@ def _groups_row(path, line, component, names, detail_prefix):
 
 
 def scan_nginx(path, text):
+    """ssl_ecdh_curve, and (proxy_)ssl_conf_command Groups or Curves, as nginx reads the file."""
     rows = []
-    text = blank_comments(text, "hash")
-    for m in NGINX_GROUPS.finditer(text):
-        names = [_group(g, OPENSSL_GROUPS) for g in m[2].strip().split(":") if g.strip()]
-        directive = re.sub(r"\s+", " ", m[1])
-        rows.append(_groups_row(path, _line_of(text, m.start(1)), "nginx", names, f"{directive} pins the TLS groups"))
+    for line, st in verify.nginx_statements(text, with_lines=True):
+        if st[-1] != ";" or len(st) < 3:
+            continue
+        name, args = st[0].lower(), st[1:-1]
+        if name == "ssl_ecdh_curve":
+            directive, value = st[0], " ".join(args)
+        elif name in ("ssl_conf_command", "proxy_ssl_conf_command") and len(args) >= 2 and \
+                args[0].lower() in ("groups", "curves"):
+            directive, value = f"{st[0]} {args[0]}", " ".join(args[1:])
+        else:
+            continue
+        names = [_group(g, OPENSSL_GROUPS) for g in value.strip().split(":") if g.strip()]
+        rows.append(_groups_row(path, line, "nginx", names, f"{directive} pins the TLS groups"))
     return rows
 
 
 def scan_go(path, text):
+    # code: comments removed outside literals; bare: string and rune contents removed too (positions kept)
+    code, bare = verify.views(text, verify.GO, keep_positions=True)
     rows = []
-    for m in GO_DEBUG_DIRECTIVE.finditer(text):
+    for m in GO_DEBUG_DIRECTIVE.finditer(bare):
         if _turns_off_mlkem(m[1]):
-            rows.append(_toolchain_row(path, _line_of(text, m.start()), "go", f"//go:debug {m[1]}"))
-    text = blank_comments(text, "slash")
-    for m in GO_CURVE_LIST.finditer(text):
+            rows.append(_toolchain_row(path, _line_of(bare, m.start()), "go", f"//go:debug {m[1]}"))
+    for m in GO_CURVE_LIST.finditer(bare):
         names = [_group(tok, GO_CURVES) for tok in re.findall(r"tls\.([A-Za-z0-9_]+)", m[1])]
-        rows.append(_groups_row(path, _line_of(text, m.start()), "go", names, "a []tls.CurveID list (CurvePreferences) pins the TLS groups"))
-    for rx, alg in ((JWT_RSA, "RSA"), (JWT_EC, "ECDSA")):
-        for m in rx.finditer(text):
+        rows.append(_groups_row(path, _line_of(bare, m.start()), "go", names, "a []tls.CurveID list (CurvePreferences) pins the TLS groups"))
+    for rx, alg in ((JWT_RSA, "RSA"), (JWT_EC, "ECDSA")):  # "RS256" is a string: read the code view
+        for m in rx.finditer(code):
             name = m[0].strip("\"'").replace("SigningMethod", "")
-            rows.append(Row(path=path, line=_line_of(text, m.start()), component="go", kind="signature",
+            rows.append(Row(path=path, line=_line_of(code, m.start()), component="go", kind="signature",
                             algorithm=f"JWT {name} ({alg})", detail="token signature; out of scope for automatic fixes",
                             nist=NIST_SIG, blocks_hybrid=False, auto_fix=False))
     return rows
 
 
 def scan_go_mod(path, text):
-    text = blank_comments(text, "slash")
+    text = verify.views(text, verify.GOMOD, keep_positions=True)[0]
     rows = []
     m = GO_MOD_GO.search(text)
     if m and int(m[1]) < 24:
@@ -192,8 +195,9 @@ def scan_go_mod(path, text):
 
 
 def scan_godebug_var(path, text):
-    """GODEBUG=...tlsmlkem=0 in a Dockerfile, shell, YAML, env or config file (comments skipped)."""
-    text = blank_comments(text, "hash")
+    """GODEBUG=...tlsmlkem=0 in a Dockerfile, shell, YAML, env or config file (lines that start with
+    `#` skipped, as verify.py reads such files)."""
+    text = verify.views(text, verify.ANY, keep_positions=True)[0]
     return [_toolchain_row(path, _line_of(text, m.start()), "config", "GODEBUG " + m[1])
             for m in GODEBUG_VAR.finditer(text) if _turns_off_mlkem(m[1].replace(",", " "))]
 

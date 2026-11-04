@@ -56,33 +56,53 @@ LINE_COMMENT = re.compile(r"^[ \t]*#[^\n]*", re.M)
 NGINX_ODD = re.compile(r"[\s;{}\x00]")  # inside a word these would read as a statement boundary
 
 
-def _views(text, tokens):
-    """(code, bare): comments removed; bare also empties string and rune literals."""
+def _spaces(t):
+    return re.sub(r"[^\n]", " ", t)
+
+
+def _views(text, tokens, keep_positions=False):
+    """(code, bare): comments removed; bare also empties string and rune literals. With
+    keep_positions, what is removed becomes spaces (newlines kept), so offsets and line numbers
+    stay: the CBOM scanner (scan.py) reads files this way to report lines."""
+    def drop(t):
+        return _spaces(t) if keep_positions else ""
+
     def code(m):
         t = m[0]
         if t.startswith("//"):
-            return t if t.startswith("//go:") else ""
+            return t if t.startswith("//go:") else drop(t)
         if t.startswith("/*"):
-            return "\n" if "\n" in t else " "
+            return _spaces(t) if keep_positions else ("\n" if "\n" in t else " ")
         if t.startswith("#"):
-            return ""
+            return drop(t)
         return t
 
     def bare(m):
         t = m[0]
         if t[:1] in "\"'`":
             q = t[:3] if t[:3] in ('"""', "'''") else t[:1]
-            return q + q
+            return q + _spaces(t[len(q):]) if keep_positions else q + q
         return code(m)
     return tokens.sub(code, text), tokens.sub(bare, text)
 
 
-def nginx_statements(text):
+def nginx_statements(text, with_lines=False):
     """nginx's own reading of a config (ngx_conf_read_token): a list of statements, each a list
     of words ending with ";", "{" or "}". A '#' starts a comment only where a word could start;
-    quotes and the escapes nginx knows are resolved."""
-    out, words, word, quote, var = [], [], None, None, False
+    quotes and the escapes nginx knows are resolved. with_lines: (line of the statement's first
+    word, words) instead."""
+    out, words, word, quote, var, start = [], [], None, None, False, 0
     i, n = 0, len(text)
+    seen, line = 0, 1  # line numbers are counted forward: statements come in order
+
+    def emit(st, at):
+        nonlocal seen, line
+        if with_lines:
+            line += text.count("\n", seen, at)
+            seen = at
+            out.append((line, st))
+        else:
+            out.append(st)
     while i < n:
         c = text[i]
         if word is None:
@@ -94,15 +114,17 @@ def nginx_statements(text):
                 i = n if j < 0 else j
                 continue
             if c in ";{":
-                out.append(words + [c])
+                emit(words + [c], start if words else i)
                 words, i = [], i + 1
                 continue
             if c == "}":
                 if words:
-                    out.append(words)
-                out.append(["}"])
+                    emit(words, start)
+                emit(["}"], i)
                 words, i = [], i + 1
                 continue
+            if not words:
+                start = i
             word, var = [], False
             if c in "\"'":
                 quote, i = c, i + 1
@@ -134,7 +156,7 @@ def nginx_statements(text):
     if word is not None:
         words.append("".join(word))
     if words:
-        out.append(words)
+        emit(words, start)
     return out
 
 
@@ -150,20 +172,18 @@ def _nginx_view(text):
     return "\n".join(lines) + "\n"
 
 
-def views(text, kind):
-    """(code, bare) of text as kind's parser reads it: what rules count."""
+def views(text, kind, keep_positions=False):
+    """(code, bare) of text as kind's parser reads it: what rules count. keep_positions: removed
+    text becomes spaces, newlines kept (not for nginx, whose view is one line per statement: use
+    nginx_statements(text, with_lines=True))."""
     if kind == NGINX:
+        if keep_positions:
+            raise ValueError("nginx: use nginx_statements(text, with_lines=True)")
         v = _nginx_view(text)
         return v, v
-    if kind == GO:
-        return _views(text, GO_TOKENS)
-    if kind == GOMOD:
-        return _views(text, GOMOD_TOKENS)
-    if kind == JS:
-        return _views(text, JS_TOKENS)
-    if kind == PY:
-        return _views(text, PY_TOKENS)
-    v = LINE_COMMENT.sub("", text)
+    if kind in (GO, GOMOD, JS, PY):
+        return _views(text, {GO: GO_TOKENS, GOMOD: GOMOD_TOKENS, JS: JS_TOKENS, PY: PY_TOKENS}[kind], keep_positions)
+    v = LINE_COMMENT.sub(lambda m: _spaces(m[0]) if keep_positions else "", text)
     return v, v
 
 
