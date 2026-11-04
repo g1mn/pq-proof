@@ -10,10 +10,12 @@ directory:
 
 receipt.json lists every artifact with its byte count and SHA-256, and every field that points at
 a file (log, diff, file) has a matching *_sha256 field. receipt_id is the SHA-256 of receipt.json
-itself without that field (keys sorted, no whitespace, UTF-8), so one hash covers the whole
-receipt and, through the manifest, every artifact. `python3 -m pqproof verify-receipt DIR`
-recomputes all of it, checks receipt.json against SCHEMA, and renders receipt.html again to
-compare it with the file.
+itself without that field, in the JSON Canonicalization Scheme (RFC 8785: keys sorted, no
+whitespace, UTF-8, numbers as ECMAScript writes them), so one hash covers the whole receipt and,
+through the manifest, every artifact, and a verifier in another language gets the same id.
+`python3 -m pqproof verify-receipt DIR` recomputes all of it, checks receipt.json against SCHEMA,
+checks that the verdict and the counts agree with the proofs, attempts and microVMs they summarize,
+and renders receipt.html again to compare it with the file.
 
 This is a hashed receipt, not proof of who wrote it: anyone can change a file and write new
 hashes. The id is worth something only when it is compared with an id taken from a source the
@@ -33,9 +35,9 @@ from . import prove
 from .loop import _open_nofollow
 from .plan import clean_text
 
-FORMAT = "pq-proof hashed receipt 1"
-NOTE = ("Hashed receipt: receipt_id is the SHA-256 of this JSON without receipt_id (sorted keys, no whitespace, "
-        "UTF-8), and every file in artifacts is listed with its SHA-256. `python3 -m pqproof verify-receipt DIR` "
+FORMAT = "pq-proof hashed receipt 2"  # 2: repo url/path/commit/tree, RFC 8785 numbers, consistency checks
+NOTE = ("Hashed receipt: receipt_id is the SHA-256 of this JSON without receipt_id in RFC 8785 canonical form (sorted "
+        "keys, no whitespace, UTF-8), and every file in artifacts is listed with its SHA-256. `python3 -m pqproof verify-receipt DIR` "
         "recomputes them. The hashes show that the files are the ones this receipt names; they do not show who "
         "produced it, so compare receipt_id with one from a source you trust.")
 MAX_ARTIFACT = 64 << 20
@@ -47,7 +49,10 @@ POLICY = ["every microVM: msb create --no-net (all traffic denied, the host and 
           "Microsandbox before it reaches the sinkhole: blocked, not counted"]
 DROPPED = "not counted"
 REL_LOG = re.compile(r"[A-Za-z0-9_.-]{1,120}/[0-9]{2,4}-[A-Za-z0-9_.-]{1,40}\.log")
-ARTIFACT_PATH = re.compile(r"artifacts/[A-Za-z0-9_.-]{1,120}(?:/[A-Za-z0-9_.-]{1,120}){0,3}")
+_SEGMENT = r"(?!\.\.?(?:/|$))[A-Za-z0-9_.-]{1,120}"  # never . or ..: a path stays inside the receipt
+ARTIFACT_PATH = re.compile(rf"artifacts/{_SEGMENT}(?:/{_SEGMENT}){{0,3}}")
+PUBLIC_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~-]+)+")
+GIT_ID = {"type": "string", "pattern": "^[0-9a-f]{40}$"}
 
 # ---------------------------------------------------------------------------------------------
 # Schema: the JSON Schema subset validate() understands (type, const, enum, pattern, minimum,
@@ -86,7 +91,8 @@ SANDBOX = strict(id=STR, step=STR, image=STR, image_digest=STR, platform_digest=
                                dropped_by_policy={"const": DROPPED}))
 SCHEMA = strict(
     format={"const": FORMAT}, receipt_id=SHA, note={"const": NOTE}, verdict={"enum": ["pass", "fail"]},
-    repo=strict(url=STR, commit={"type": "string", "pattern": "^[0-9a-f]{40}$"}),
+    repo=strict(url={"type": ["string", "null"], "pattern": "^" + PUBLIC_URL.pattern + "$"}, path=STR, commit=GIT_ID,
+                tree=GIT_ID),
     started_at=TIME, finished_at=TIME, destroyed_at=TIME_OR_NULL,
     checks={"type": "object", "additionalProperties": {"type": ["boolean", "integer", "array", "null"]}},
     timeline={"type": "array", "items": strict(name=STR, started_at=TIME, ended_at=TIME)},
@@ -161,8 +167,63 @@ def validate(value, schema, where="receipt"):
 
 
 # ---------------------------------------------------------------------------------------------
+def _number(x):
+    """A number as ECMAScript's Number::toString writes it (RFC 8785, 3.2.2.3)."""
+    if isinstance(x, int):
+        return str(x)
+    if x != x or x in (float("inf"), float("-inf")):
+        raise ValueError("NaN and infinity have no JSON form")
+    if x == 0:
+        return "0"
+    m = re.fullmatch(r"(-?)([0-9]+)(?:\.([0-9]+))?(?:e([-+][0-9]+))?", repr(x))  # repr: the shortest round trip
+    sign, whole, frac = m[1], m[2], m[3] or ""
+    digits = (whole + frac).lstrip("0")
+    n = len(whole) + int(m[4] or 0) - (len(whole + frac) - len(digits))  # value = 0.DIGITS x 10^n
+    digits = digits.rstrip("0")
+    k = len(digits)
+    if k <= n <= 21:
+        out = digits + "0" * (n - k)
+    elif 0 < n <= 21:
+        out = digits[:n] + "." + digits[n:]
+    elif -6 < n <= 0:
+        out = "0." + "0" * -n + digits
+    else:
+        e = n - 1
+        out = (digits[0] + ("." + digits[1:] if k > 1 else "")) + "e" + ("+" if e > 0 else "-") + str(abs(e))
+    return sign + out
+
+
+def _jcs(value):
+    if value is None or isinstance(value, bool):
+        return json.dumps(value)
+    if isinstance(value, (int, float)):
+        return _number(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ",".join(_jcs(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ",".join(json.dumps(k, ensure_ascii=False) + ":" + _jcs(value[k]) for k in sorted(value)) + "}"
+    raise TypeError(f"{type(value).__name__} has no JSON form")
+
+
 def canonical(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    """value in the JSON Canonicalization Scheme (RFC 8785), as UTF-8 bytes. Keys sort by code
+    point, which is RFC 8785's UTF-16 order for every key a receipt has (ASCII)."""
+    return _jcs(value).encode("utf-8")
+
+
+def public_url(url):
+    """A repository URL a reader can open, without credentials: git@host:a/b.git and ssh:// become
+    https://host/a/b; a local path, file://, http:// or anything else odd becomes None."""
+    if not isinstance(url, str):
+        return None
+    u = url.strip()
+    u = re.sub(r"^git@([A-Za-z0-9.-]+):", r"https://\1/", u)
+    u = re.sub(r"^ssh://git@([A-Za-z0-9.-]+)(?::[0-9]+)?/", r"https://\1/", u)
+    u = re.sub(r"^(https://)[^/@]*@", r"\1", u)
+    u = re.sub(r"\.git/?$", "", u).rstrip("/")
+    return u if PUBLIC_URL.fullmatch(u) else None
 
 
 def compute_id(receipt):
@@ -210,6 +271,8 @@ class _Artifacts:
 
 
 def _read_nofollow(root, rel, limit=MAX_ARTIFACT):
+    if any(part in ("", ".", "..") for part in rel.split("/")):
+        raise ValueError(f"{rel}: not a plain path inside the receipt")
     fd = _open_nofollow(os.path.realpath(root), rel, os.O_RDONLY | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as f:
         st = os.fstat(f.fileno())
@@ -409,7 +472,8 @@ def build(report, log_dir, out):
                    "tls_weakening_refused": [int(n) for n in report.get("tls_weakening_refused", [])]}
     receipt = {
         "format": FORMAT, "note": NOTE, "verdict": "pass" if report.get("passed") else "fail",
-        "repo": {"url": str(report["repo"]["path"]), "commit": report["repo"]["commit"]},
+        "repo": {"url": public_url(report["repo"].get("url")), "path": str(report["repo"]["path"]),
+                 "commit": report["repo"]["commit"], "tree": report["repo"]["tree"]},
         "started_at": iso(report["started_at"]), "finished_at": iso(report.get("finished_at") or time.time()),
         "destroyed_at": max(destroyed) if destroyed and all(destroyed) else None,
         "checks": {k: v for k, v in checks.items() if isinstance(v, (bool, int, list)) or v is None},
@@ -452,14 +516,50 @@ def _hash_refs(value, where="receipt"):
 
 
 def _listed_files(root):
+    """Every file and link under root (not following links), receipt.json and receipt.html aside."""
     out = []
-    base = os.path.join(root, "artifacts")
-    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         for name in dirnames + filenames:
             full = os.path.join(dirpath, name)
             if os.path.islink(full) or not os.path.isdir(full):
                 out.append(os.path.relpath(full, root).replace(os.sep, "/"))
-    return sorted(out)
+    return sorted(p for p in out if p not in ("receipt.json", "receipt.html"))
+
+
+def consistency(r):
+    """Where the receipt's summaries disagree with what they summarize ([] when they agree). The
+    verdict and the containment numbers are what the page shows first; they must follow from the
+    proofs, attempts and microVMs below them."""
+    out = []
+    c, sbs, attempts, patch = r["containment"], r["sandboxes"], r["attempts"], r["patch"]
+    events = [ev for sb in sbs for ev in sb["egress"]["reached_sinkhole"]]
+    destroyed = [sb["destroyed_at"] for sb in sbs]
+    want = {"sandboxes": len(sbs), "sandboxes_destroyed": sum(1 for d in destroyed if d),
+            "reached_sinkhole": len(events),
+            "reached_sinkhole_not_kept": sum(sb["egress"]["reached_sinkhole_not_kept"] for sb in sbs),
+            "canaries_caught": sorted({x for ev in events for x in ev["canaries"]}),
+            "tls_weakening_refused": [a["number"] for a in attempts if a["tls_weakening"]]}
+    for key, value in want.items():
+        if c[key] != value:
+            out.append(f"containment.{key} is {c[key]!r}, but the record below it gives {value!r}")
+    last = max(destroyed) if destroyed and all(destroyed) else None
+    if r["destroyed_at"] != last:
+        out.append(f"destroyed_at is {r['destroyed_at']!r}, but the microVMs give {last!r}")
+    passed = [a["number"] for a in attempts if a["ok"]]
+    if patch is not None and patch["attempt"] not in passed:
+        out.append(f"the patch is from attempt {patch['attempt']}, which did not pass")
+    if r["verdict"] == "pass":
+        final = [p for p in r["proofs"] if patch and p["step"] == f"attempt {patch['attempt']}"]
+        if patch is None or not attempts or attempts[-1]["number"] != patch["attempt"]:
+            out.append("verdict pass, but no patch from the last attempt")
+        if not final:
+            out.append("verdict pass, but no proof from the attempt that passed")
+        out += [f"verdict pass, but proof failed: {p['step']}: {p['name']}" for p in r["proofs"] if not p["ok"]]
+        if c["host_build_commands"] != 0:
+            out.append(f"verdict pass with {c['host_build_commands']} build commands on the host")
+        if c["sandboxes_destroyed"] != c["sandboxes"]:
+            out.append("verdict pass, but not every microVM was destroyed")
+    return out
 
 
 def verify(root):
@@ -500,6 +600,9 @@ def verify(root):
         out.append((False, f"{where}: {path} with sha256 {digest} is not an artifact with that hash"))
     if not bad:
         out.append((True, f"all {len(refs)} file references in the receipt name an artifact with the same SHA-256"))
+    problems = consistency(receipt)
+    out.append((not problems, "the verdict and the counts agree with the proofs, attempts and microVMs" if not problems
+                else "the verdict or the counts disagree with the record:\n  " + "\n  ".join(problems[:20])))
     for side in ("before", "after"):
         path = receipt["cbom"][f"{side}_file"]
         if path in listed:
@@ -589,8 +692,8 @@ def render_html(r):
 <title>PQ-Proof receipt</title><style>{STYLE}</style></head><body><main>
 <header><h1>PQ-Proof hashed receipt {verdict}</h1><button id="theme" type="button">Light</button></header>
 <section><div class="grid">
-<div><div class="muted">Repository</div><code>{_e(r['repo']['url'])}</code></div>
-<div><div class="muted">Commit</div><span class="hash">{_e(r['repo']['commit'])}</span></div>
+<div><div class="muted">Repository</div><code>{_e(r['repo']['url'] or 'no public URL')}</code><br><span class="muted">checked out from <code>{_e(r['repo']['path'])}</code></span></div>
+<div><div class="muted">Commit, tree</div><span class="hash">{_e(r['repo']['commit'])}</span><br><span class="hash">{_e(r['repo']['tree'])}</span></div>
 <div><div class="muted">Started, finished (UTC)</div><span class="nowrap">{_e(r['started_at'])}</span><br><span class="nowrap">{_e(r['finished_at'])}</span></div>
 <div><div class="muted">Last microVM destroyed</div><span class="nowrap">{_e(r['destroyed_at'] or 'not all destroyed')}</span></div>
 </div><p><span class="muted">receipt_id</span><br>{_short(r['receipt_id'])}</p>

@@ -361,8 +361,14 @@ class KeysAndCost(unittest.TestCase):
         root = str(pathlib.Path(__file__).resolve().parent.parent)
         child = ("import os\ntry:\n    os.lseek(0, 0, 0); data = os.read(0, 4096)\nexcept OSError:\n    data = b''\n"
                  "print('key line on fd 0:', b'VULTR_INFERENCE_API_KEY=' in data)\n")
-        fake_git = "#!" + sys.executable + " -I\nimport os, sys\n" + child.replace("print(", "print(sys.argv[1], ") + \
-            "if sys.argv[1] == 'clone':\n    os.makedirs(sys.argv[-1])\nelse:\n    print('0' * 40)\n"
+        # the fake git logs what it finds on fd 0 next to itself (the e2e run captures its output)
+        fake_git = ("#!" + sys.executable + " -I\nimport os, sys\n"
+                    "try:\n    os.lseek(0, 0, 0); data = os.read(0, 4096)\nexcept OSError:\n    data = b''\n"
+                    "with open(os.path.join(os.path.dirname(sys.argv[0]), 'calls.log'), 'a') as log:\n"
+                    "    print(sys.argv[1:5], 'key line on fd 0:', b'VULTR_INFERENCE_API_KEY=' in data, file=log)\n"
+                    "if sys.argv[1] == 'clone':\n    os.makedirs(sys.argv[-1])\n"
+                    "elif 'remote' in sys.argv:\n    print('git@github.com:g1mn/orders-edge.git')\n"
+                    "else:\n    print('0' * 40)\n    print('1' * 40)\n")
         reads_key = (f"import subprocess, sys; sys.path.insert(0, {root!r}); from pqproof.inference import key_from_file; "
                      "key_from_file('-'); subprocess.run([sys.executable, '-I', '-c', sys.argv[1]])")
         snapshots = (f"import importlib.util, os, sys; spec = importlib.util.spec_from_file_location('e2e', {root!r} + "
@@ -381,7 +387,9 @@ class KeysAndCost(unittest.TestCase):
                 with self.subTest(name), open(key) as stdin:
                     r = subprocess.run([sys.executable, "-I", "-c", *argv], stdin=stdin, capture_output=True, text=True,
                                        timeout=60)
-                    lines = [ln for ln in r.stdout.splitlines() if "key line on fd 0" in ln]
+                    log = bin_dir / "calls.log"
+                    calls = log.read_text().splitlines() if log.exists() else []
+                    lines = [ln for ln in r.stdout.splitlines() + calls if "key line on fd 0" in ln]
                     self.assertTrue(lines, r.stdout + r.stderr[-500:])
                     self.assertTrue(all(ln.endswith("False") for ln in lines), lines)
                     self.assertNotIn("not-a-real-key-46", r.stdout + r.stderr)

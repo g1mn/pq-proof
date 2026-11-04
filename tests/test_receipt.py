@@ -51,7 +51,8 @@ def make_run(d):
     plan = json.loads(json.dumps(PLAN))
     allow = compile_allowlist(plan)
     report = {"started_at": 1793805100.25, "model": {"kind": "scripted", "note": "n", "file": "f.json"},
-              "repo": {"path": "../orders-edge", "commit": "7c7e501" + "0" * 33},
+              "repo": {"path": "../orders-edge", "url": "https://deploy:tok@github.com/g1mn/orders-edge.git",
+                       "commit": "7c7e501" + "0" * 33, "tree": "f196979a" + "0" * 32},
               "cbom_before": [r.to_json() for r in scan(snap)], "plan": plan,
               "images": [{"requested": "golang:1.27-bookworm", "pinned": GO, "digest": GO.partition("@")[2], "architecture": "arm64"},
                          {"requested": "nginx:1.30-trixie", "pinned": NG, "digest": NG.partition("@")[2], "architecture": "arm64"}]}
@@ -219,6 +220,103 @@ class Receipt(unittest.TestCase):
         bad = subprocess.run([sys.executable, "-m", "pqproof", "verify-receipt", root], capture_output=True, text=True, env=env)
         self.assertEqual(bad.returncode, 1)
         self.assertIn("FAIL artifacts/attempt-2.diff", bad.stdout)
+
+    # Day-3 review (11-05) -------------------------------------------------------------------
+    def test_the_repository_is_named_by_public_url_commit_and_tree(self):
+        # the VX1 receipt said /opt/pqproof/orders-edge/current and a host-only commit: no reader
+        # could match it with the repository it came from
+        self.assertEqual(self.receipt["repo"], {"url": "https://github.com/g1mn/orders-edge", "path": "../orders-edge",
+                                                "commit": "7c7e501" + "0" * 33, "tree": "f196979a" + "0" * 32})
+        for given, want in (("git@github.com:g1mn/orders-edge.git", "https://github.com/g1mn/orders-edge"),
+                            ("ssh://git@github.com/g1mn/orders-edge", "https://github.com/g1mn/orders-edge"),
+                            ("https://x:y@example.com:8443/a/b.git", "https://example.com:8443/a/b"),
+                            ("/opt/pqproof/orders-edge/current", None), ("file:///tmp/x", None), (None, None),
+                            ("http://example.com/a", None), ("https://example.com/a b", None)):
+            with self.subTest(given=given):
+                self.assertEqual(receipt.public_url(given), want)
+
+    def test_artifact_paths_stay_inside_the_receipt(self):
+        root = self.copy()
+        outside = pathlib.Path(root).parent / "report.json"
+        outside.write_text('{"not": "part of the receipt"}\n')
+        digest = hashlib.sha256(outside.read_bytes()).hexdigest()
+        for path in ("artifacts/../../report.json", "artifacts/./x", "artifacts/logs/../../../report.json"):
+            with self.subTest(path):
+                r = self.copy()
+                (pathlib.Path(r).parent / "report.json").write_bytes(outside.read_bytes())
+                self.rewrite(r, lambda j: j["artifacts"].append({"path": path, "bytes": outside.stat().st_size, "sha256": digest}),
+                             rehash=True)
+                bad = self.failures(r)
+                self.assertNotEqual(bad, [])
+                self.assertFalse([w for w in bad if digest in w and "the receipt says" not in w], bad)
+        with self.assertRaises((OSError, ValueError)):
+            receipt._read_nofollow(root, "artifacts/../../report.json")
+
+    def test_a_file_anywhere_in_the_receipt_must_be_listed(self):
+        for rel in ("extra.html", "notes/a.txt", "artifacts/logs/extra.log"):
+            with self.subTest(rel):
+                root = self.copy()
+                pathlib.Path(root, rel).parent.mkdir(parents=True, exist_ok=True)
+                pathlib.Path(root, rel).write_text("x")
+                self.assertTrue(any(rel in w for w in self.failures(root)), rel)
+
+    def final_hybrid(self, j):
+        return next(p for p in j["proofs"] if p["step"] == "attempt 2" and p["name"].startswith("127.0.0.1:8443")
+                    and "hybrid-only client" in p["name"])
+
+    def test_the_verdict_and_counts_agree_with_the_record(self):
+        # the page says the verdict comes from the handshakes and exit codes; verify-receipt now checks it
+        def failed_proof(j):
+            self.final_hybrid(j).update(actual="no connection (handshake failure)", ok=False)
+
+        def undestroyed(j):
+            j["sandboxes"][0]["destroyed_at"] = None
+
+        cases = {"verdict pass with a failed final proof": failed_proof,
+                 "verdict pass without a patch": lambda j: j.update(patch=None),
+                 "a patch from an attempt that failed": lambda j: j["patch"].update(attempt=1),
+                 "a microVM not destroyed, counted as destroyed": undestroyed,
+                 "fewer microVMs counted": lambda j: j["containment"].update(sandboxes=1),
+                 "sinkhole events not counted": lambda j: j["containment"].update(reached_sinkhole=0),
+                 "events over the cap not counted": lambda j: j["containment"].update(reached_sinkhole_not_kept=0),
+                 "a canary dropped from the summary": lambda j: j["containment"].update(canaries_caught=[]),
+                 "a refused attempt left out": lambda j: j["containment"].update(tls_weakening_refused=[]),
+                 "host build commands with a pass": lambda j: j["containment"].update(host_build_commands=1)}
+        for name, change in cases.items():
+            with self.subTest(name):
+                root = self.copy()
+                self.rewrite(root, change, rehash=True)
+                self.assertNotEqual(self.failures(root), [], name)
+        root = self.copy()  # a failed run may have passing proofs: that is no contradiction
+        self.rewrite(root, lambda j: j.update(verdict="fail"), rehash=True)
+        self.assertEqual(self.failures(root), [])
+
+
+class Canonical(unittest.TestCase):
+    """receipt_id must come out the same in a verifier written in another language (RFC 8785)."""
+
+    def test_numbers_are_written_as_ecmascript_writes_them(self):
+        for x, want in ((0.0, "0"), (-0.0, "0"), (5e-06, "0.000005"), (1e-07, "1e-7"), (0.015523, "0.015523"),
+                        (1e21, "1e+21"), (1e20, "100000000000000000000"), (123.0, "123"), (0.1, "0.1"),
+                        (1.5e300, "1.5e+300"), (-2.5, "-2.5"), (7, "7"), (1.2345678901234567e-05, "0.000012345678901234568"),
+                        (True, "true"), (None, "null")):
+            with self.subTest(x=x):
+                self.assertEqual(receipt.canonical(x), want.encode())
+        self.assertEqual(receipt.canonical({"b": [1.0, "\u00e9\n"], "a": {}}), '{"a":{},"b":[1,"\u00e9\\n"]}'.encode())
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_receipt_id_matches_a_javascript_verifier(self):
+        js = ("let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const r=JSON.parse(s);delete r.receipt_id;"
+              "const c=v=>Array.isArray(v)?v.map(c):v&&typeof v==='object'?Object.keys(v).sort().reduce((o,k)=>(o[k]=c(v[k]),o),{}):v;"
+              "process.stdout.write(require('crypto').createHash('sha256').update(JSON.stringify(c(r)),'utf8').digest('hex'))})")
+        with tempfile.TemporaryDirectory() as d:
+            report, log_dir = make_run(d)
+            r = receipt.build(report, log_dir, os.path.join(d, "receipt"))
+        for cost in (0.015523, 0.0, 5e-06, 1e-07, 12.5):
+            with self.subTest(cost=cost):
+                r2 = dict(r, model=dict(r["model"], cost_usd=cost))
+                node = subprocess.run(["node", "-e", js], input=json.dumps(r2), capture_output=True, text=True, check=True).stdout
+                self.assertEqual(receipt.compute_id(r2), node)
 
 
 class Schema(unittest.TestCase):

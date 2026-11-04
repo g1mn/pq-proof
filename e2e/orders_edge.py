@@ -81,11 +81,17 @@ def snapshot(repo, dest, rec):
     # which may hold VULTR_INFERENCE_API_KEY: no child of the control plane gets the key
     env = {"PATH": os.environ.get("PATH", ""), "GIT_TERMINAL_PROMPT": "0"}
     subprocess.run(argv, check=True, stdin=subprocess.DEVNULL, env=env)
-    commit = subprocess.run(["git", "-C", clone, "rev-parse", "HEAD"], check=True, stdin=subprocess.DEVNULL, env=env,
-                            capture_output=True, text=True).stdout.strip()
-    rec.argvs.append(["git", "-C", clone, "rev-parse", "HEAD"])
+    argv = ["git", "-C", clone, "rev-parse", "HEAD", "HEAD^{tree}"]
+    rec.argvs.append(argv)
+    commit, tree = subprocess.run(argv, check=True, stdin=subprocess.DEVNULL, env=env, capture_output=True,
+                                  text=True).stdout.split()
+    # where the reader can find this commit: the source's origin (receipt.public_url drops
+    # credentials and anything that is not https; deploy/upload.sh sets it on the VX1 copy)
+    argv = ["git", "-C", os.fspath(repo), "remote", "get-url", "origin"]
+    rec.argvs.append(argv)
+    url = subprocess.run(argv, stdin=subprocess.DEVNULL, env=env, capture_output=True, text=True).stdout.strip() or None
     shutil.copytree(clone, dest, symlinks=True, ignore=shutil.ignore_patterns(".git"))
-    return commit
+    return {"path": os.fspath(repo), "url": receipt.public_url(url), "commit": commit, "tree": tree}
 
 
 def baseline_ok(res, targets):
@@ -179,7 +185,7 @@ def main():
         stop_reaper = runner.start_reaper()
         snap = os.path.join(scratch, "snapshot")
         phases.start("snapshot (git clone on the host) and CBOM")
-        report["repo"] = {"path": os.fspath(args.repo), "commit": snapshot(args.repo, snap, rec)}
+        report["repo"] = snapshot(args.repo, snap, rec)
         report["cbom_before"] = [r.to_json() for r in scan(snap)]
         phases.end()
 

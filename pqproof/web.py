@@ -112,7 +112,8 @@ def load_receipt(runs, run_id):
 
 def run_summary(run_id, r):
     model = r.get("model") or {}
-    return {"id": run_id, "verdict": r.get("verdict"), "repo": (r.get("repo") or {}).get("url"),
+    repo = r.get("repo") or {}
+    return {"id": run_id, "verdict": r.get("verdict"), "repo": repo.get("url") or repo.get("path"),
             "commit": (r.get("repo") or {}).get("commit"), "started_at": r.get("started_at"),
             "finished_at": r.get("finished_at"), "receipt_id": r.get("receipt_id"),
             "model": ", ".join(model.get("models") or []) or model.get("provider")}
