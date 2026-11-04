@@ -11,7 +11,12 @@ Nothing from the repo runs on the host. The repo's Dockerfile is read, never bui
   The repo's servers run as unprivileged users (BUILT_USER, NGINX_USER: one uid each), so they
   cannot replace the probe, which stays root-owned; the probe binary is copied back out and
   hashed before the controls and after the last handshake. The control plane, as root, only
-  creates nginx's pid file and cache directory for NGINX_USER beforehand.
+  creates nginx's pid file and cache directory for NGINX_USER beforehand, with /usr/bin/install
+  named by its absolute path. The programs the plan built go to BUILT_DIR, which is not on the
+  guest's PATH, and start by absolute path: a built program can never stand in for a command the
+  control plane runs as root by name (the VX1 review built one called `install`, which then ran as
+  root and replaced /usr/sbin/nginx). The only programs root runs by name are tls_probe, a name no
+  plan may build, and what the runtime image itself ships.
   Each target names the server that must own its port; before any handshake, `tls_probe
   listeners` shows which process (uid and executable) holds each port, and the same listing is
   taken again after the last handshake. A server answering on another server's port is a failed
@@ -44,7 +49,14 @@ NGINX_USER = "65534:65534"
 BUILT_USER = "65533:65533"
 NGINX_CACHE = "/var/cache/nginx"  # temp paths of the official nginx images
 NGINX_EXE = "/usr/sbin/nginx"  # the official nginx images' binary (Debian and Alpine variants)
-BIN_DIR = "/usr/local/bin"  # where the prove microVM gets the programs the plan built
+# Where the prove microVM gets the programs the plan built: not on the guest's PATH, which was
+# /.msb/scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin as root in msb 0.7.13
+# microVMs from nginx:1.28-bookworm and alpine:3 (measured 11-04). `msb copy` of a file into a missing
+# directory fails; a directory copy creates the missing parents (755) and keeps the directory's mode.
+BUILT_DIR = "/opt/pqproof/bin"
+# The control plane's own root command, by absolute path: coreutils' in nginx:1.28-bookworm, a busybox
+# link in alpine:3 (measured 11-04).
+INSTALL = "/usr/bin/install"
 JOB_LOG_LINES = 50
 JOB_ID = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 GUEST_ABS = re.compile(r"(?:/(?!\.\.?(?:/|$))[A-Za-z0-9_.-]+)+")
@@ -130,8 +142,8 @@ def tls_layout(root, nginx_conf=NGINX_CONF):
 def nginx_prep(layout):
     """The control plane's fixed root commands that let nginx run as NGINX_USER."""
     uid, gid = NGINX_USER.split(":")
-    return [("install", "-d", "-o", uid, "-g", gid, "-m", "0755", NGINX_CACHE),
-            ("install", "-o", uid, "-g", gid, "-m", "0644", "/dev/null", layout.pid)]
+    return [(INSTALL, "-d", "-o", uid, "-g", gid, "-m", "0755", NGINX_CACHE),
+            (INSTALL, "-o", uid, "-g", gid, "-m", "0644", "/dev/null", layout.pid)]
 
 
 def stage_images(root, allow, pins):
@@ -183,7 +195,7 @@ def owner_problems(lines, targets):
     lines come from prove.listeners; targets are (addr, server) pairs."""
     want = {prove.port(a): (a, "tls_probe", "0", prove.GUEST_PROBE, "ref") for a, _ in prove.REFERENCES}
     for addr, server in targets:
-        user, exe = (NGINX_USER, NGINX_EXE) if server == "nginx" else (BUILT_USER, f"{BIN_DIR}/{server}")
+        user, exe = (NGINX_USER, NGINX_EXE) if server == "nginx" else (BUILT_USER, f"{BUILT_DIR}/{server}")
         want[prove.port(addr)] = (addr, server, user.split(":")[0], exe, "target")
     out = {"ref": [], "target": []}
     for port, (addr, server, uid, exe, kind) in sorted(want.items()):
@@ -221,6 +233,9 @@ class Pipeline:
             return BuildResult(ok=False, raw_error=str(e), detail=detail)
         out_dir = os.path.join(self.scratch, f"out-{attempt}")
         os.makedirs(out_dir)
+        bin_dir = os.path.join(out_dir, "bin")  # goes into the prove microVM as BUILT_DIR, mode and all
+        os.makedirs(bin_dir)
+        os.chmod(bin_dir, 0o755)
         tag = f"a{attempt}"
 
         # build: tests first, then the build commands, in the build stage image
@@ -237,7 +252,8 @@ class Pipeline:
             if not failed:
                 for argv in builds:
                     out = next(a[3:] for a in argv if a.startswith("-o="))
-                    binaries.append(s.copy_out(f"{SRC}/{out}", out_dir))
+                    binaries.append(s.copy_out(f"{SRC}/{out}", bin_dir))
+                    os.chmod(binaries[-1], 0o755)  # run by BUILT_USER in the prove microVM
         detail["build"] = _session_record(s, self.sinkhole)
         if failed:
             return BuildResult(ok=False, raw_error=_raw(failed), detail=detail)
@@ -247,14 +263,17 @@ class Pipeline:
         targets = sorted(self.allow.targets)
         addrs = [a for a, _ in targets]
         allow = self.allow.union(prove.probe_allowlist(addrs, lay.tls_dir, lay.servername, lay.hosts))
-        allow = allow.union(Allowlist(commands=frozenset(nginx_prep(lay)), paths=frozenset(), images=frozenset()))
+        # the built programs the plan runs as [NAME] start as [BUILT_DIR/NAME]
+        started = [os.path.basename(p) for p in binaries if self.allow.allows_command([os.path.basename(p)])]
+        own = set(nginx_prep(lay)) | {(f"{BUILT_DIR}/{name}",) for name in started}
+        allow = allow.union(Allowlist(commands=frozenset(own), paths=frozenset(), images=frozenset()))
         conf = f"{SRC}/{lay.nginx_conf}"
         verdict = {"positive_control": None, "negative_control": None, "listeners": None, "targets": {}}
         invalid = wrong_owner = None
         with self.runner.session(allow, self.job, f"prove-{tag}", run_img, PROVE_LIMITS) as s:
             s.copy_in(workdir, SRC)
-            for path in binaries:
-                s.copy_in(path, f"{BIN_DIR}/{os.path.basename(path)}")
+            if binaries:
+                s.copy_in(bin_dir, BUILT_DIR)
             verdict["probe"] = prove.install_probe(s, self.probe, lay.tls_dir, lay.hosts)
             for argv in nginx_prep(lay):
                 e = s.exec(list(argv))
@@ -266,10 +285,9 @@ class Pipeline:
             else:
                 prove.start_references(s, lay.tls_dir)  # before any repo server can take their ports
                 jobs = []
-                for path in binaries:  # the plan says whether to run what it built
-                    if self.allow.allows_command([os.path.basename(path)]):
-                        argv = [os.path.basename(path)]
-                        jobs.append((argv, s.start(argv, user=BUILT_USER)))
+                for name in started:  # the plan says whether to run what it built
+                    argv = [f"{BUILT_DIR}/{name}"]
+                    jobs.append((argv, s.start(argv, user=BUILT_USER)))
                 jobs.append((["nginx", "-c", conf], s.start(["nginx", "-c", conf], user=NGINX_USER)))
                 invalid = prove.verify_probe(s, self.probe, os.path.join(out_dir, "probe-before"))
                 if not invalid:  # who holds each port, before any handshake

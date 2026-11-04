@@ -63,10 +63,12 @@ PROGRAMS = {
 # A plan may also run, by name, a program it builds itself with `go build -o=out/NAME` (the
 # server it is about to prove), with flag-style arguments only. It runs inside the microVM.
 BUILT_ARG = r"-[a-z][a-z0-9-]*=[A-Za-z0-9_.,:/-]+"
-# A built program named like a system tool would read to the approver as that tool.
+# A built program named like a system tool would read to the approver as that tool. `install` is the
+# tool the prove step itself runs as root (pipeline.INSTALL); built programs never reach the guest's
+# PATH (pipeline.BUILT_DIR), so this list is about what the approver reads, not what runs.
 RESERVED_NAMES = frozenset({"sh", "bash", "dash", "zsh", "env", "busybox", "sudo", "su", "python", "python3",
                             "perl", "ruby", "node", "curl", "wget", "nc", "ncat", "socat", "ssh", "scp", "git",
-                            "docker", "msb", "openssl"})
+                            "docker", "msb", "openssl", "install"})
 PATH_CHARS = re.compile(r"[A-Za-z0-9._/-]+")
 # Base images: Docker Hub official images pinned by digest, `name[:tag]@sha256:<64 hex>`. A tag
 # alone is not a pin (the registry owner can move it); it may stay next to the digest for the

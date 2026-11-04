@@ -178,13 +178,15 @@ LISTENERS = """listen: 0.0.0.0:8443 uid=65534 inode=31 pid=20 exe=/usr/sbin/ngin
 listen: 0.0.0.0:8443 uid=65534 inode=31 pid=21 exe=/usr/sbin/nginx
 listen: 127.0.0.1:4433 uid=0 inode=11 pid=10 exe=/usr/local/bin/tls_probe
 listen: 127.0.0.1:4434 uid=0 inode=12 pid=12 exe=/usr/local/bin/tls_probe
-listen: 127.0.0.1:9443 uid=65533 inode=41 pid=30 exe=/usr/local/bin/api
+listen: 127.0.0.1:9443 uid=65533 inode=41 pid=30 exe=/opt/pqproof/bin/api
 """
+# `echo $PATH` as root in msb 0.7.13 microVMs from nginx:1.28-bookworm and alpine:3 (Mac, 11-04).
+GUEST_PATH = "/.msb/scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # Review day 2 (S1): the API took 127.0.0.1:8443 first; nginx could not bind and exited.
 SQUATTED = """listen: 127.0.0.1:4433 uid=0 inode=11 pid=10 exe=/usr/local/bin/tls_probe
 listen: 127.0.0.1:4434 uid=0 inode=12 pid=12 exe=/usr/local/bin/tls_probe
-listen: 127.0.0.1:8443 uid=65533 inode=40 pid=30 exe=/usr/local/bin/api
-listen: 127.0.0.1:9443 uid=65533 inode=41 pid=30 exe=/usr/local/bin/api
+listen: 127.0.0.1:8443 uid=65533 inode=40 pid=30 exe=/opt/pqproof/bin/api
+listen: 127.0.0.1:9443 uid=65533 inode=41 pid=30 exe=/opt/pqproof/bin/api
 """
 
 
@@ -294,7 +296,7 @@ class Verdict(unittest.TestCase):
         # review day 2 (S5): the API ran as root and replaced /usr/local/bin/tls_probe
         pipe, root, runner = fake_pipeline(self, compile_allowlist(PLAN))
         pipe.build_and_prove(root, 0)
-        starts = {e[1][0]: e[2].get("user") for e in runner.log if e[0] == "start" and e[1][0] != "tls_probe"}
+        starts = {os.path.basename(e[1][0]): e[2].get("user") for e in runner.log if e[0] == "start" and e[1][0] != "tls_probe"}
         self.assertEqual(starts, {"api": pipeline.BUILT_USER, "nginx": pipeline.NGINX_USER})
         self.assertNotEqual(pipeline.BUILT_USER, pipeline.NGINX_USER)
         self.assertTrue(all(not u.startswith("0:") for u in starts.values()))
@@ -302,10 +304,32 @@ class Verdict(unittest.TestCase):
         self.assertEqual(nginx_t[0][2].get("user"), pipeline.NGINX_USER)
         # the control plane prepares the pid file and cache directory as root, before nginx -t
         execs = [e[1] for e in runner.log if e[0] == "exec"]
-        prep = [a for a in execs if a[0] == "install"]
+        prep = [a for a in execs if a[0] == pipeline.INSTALL]
         self.assertEqual(len(prep), 2)
         self.assertLess(execs.index(prep[-1]), execs.index(nginx_t[0][1]))
-        self.assertTrue(all(not e[2].get("user") for e in runner.log if e[0] == "exec" and e[1][0] in ("install", "tls_probe")))
+        self.assertTrue(all(not e[2].get("user") for e in runner.log if e[0] == "exec" and e[1][0] in (pipeline.INSTALL, "tls_probe")))
+
+    def test_built_programs_stay_off_the_guest_path_and_root_runs_none_of_them(self):
+        # VX1 review (blocker): a plan built `go build -o=out/install`; it was copied to /usr/local/bin/install,
+        # ahead of /usr/bin on the guest PATH, so the control plane's root `install ...` ran it, and it
+        # replaced /usr/sbin/nginx with a Go server that spoke hybrid (proof ok on arm64 and x86_64)
+        pipe, root, runner = fake_pipeline(self, compile_allowlist(PLAN))
+        pipe.build_and_prove(root, 0)
+        guest_path = GUEST_PATH.split(":")
+        self.assertNotIn(pipeline.BUILT_DIR, guest_path)
+        for dest in (e[1] for e in runner.log if e[0] == "copy_in" and e[1] != prove.GUEST_PROBE):
+            with self.subTest(copied_to=dest):  # nothing of the repo's lands in a directory on the PATH
+                self.assertFalse(any(dest == d or dest.startswith(d.rstrip("/") + "/") for d in guest_path), dest)
+        # the prove microVM's actions start at its own copy of the snapshot (the build microVM's come first:
+        # there make and go run the repo's code as root by design, and only the built file comes out)
+        prove_vm = runner.log[[i for i, e in enumerate(runner.log) if e == ("copy_in", pipeline.SRC)][1]:]
+        as_root = [e[1] for e in prove_vm if e[0] in ("exec", "start") and not e[2].get("user")]
+        self.assertTrue(as_root)
+        for argv in as_root:  # by absolute path, or the probe's own name, which no plan may build
+            with self.subTest(argv=argv):
+                self.assertTrue(argv[0].startswith("/") or argv[0] == prove.PROBE_NAME, argv)
+        api = [e for e in runner.log if e[0] == "start" and e[1][0].endswith("/api")]
+        self.assertEqual([(e[1], e[2].get("user")) for e in api], [([f"{pipeline.BUILT_DIR}/api"], pipeline.BUILT_USER)])
 
     def test_a_changed_probe_binary_invalidates_the_proof(self):
         FakeRunner.hybrid_servers = True
@@ -323,7 +347,7 @@ class Verdict(unittest.TestCase):
         res = pipe.build_and_prove(root, 0)
         self.assertFalse(res.ok)
         self.assertIn("127.0.0.1:8443 must be served by nginx", res.raw_error)
-        self.assertIn("exe=/usr/local/bin/api", res.raw_error)
+        self.assertIn("exe=/opt/pqproof/bin/api", res.raw_error)
         self.assertIn("(log of job)", res.raw_error)  # the servers' own output goes back too
         self.assertEqual(res.detail["verdict"]["targets"], {})
 
@@ -334,17 +358,17 @@ class Verdict(unittest.TestCase):
         pipe, root, _ = fake_pipeline(self, compile_allowlist(PLAN), FakeRunner(listeners=[missing]))
         res = pipe.build_and_prove(root, 0)
         self.assertFalse(res.ok)
-        self.assertIn("127.0.0.1:9443 must be served by api (uid 65533, /usr/local/bin/api); listening on port 9443:\n  nothing",
+        self.assertIn("127.0.0.1:9443 must be served by api (uid 65533, /opt/pqproof/bin/api); listening on port 9443:\n  nothing",
                       res.raw_error)
         # the probe's reference server must be the probe itself, as root
-        taken = LISTENERS.replace("uid=0 inode=11 pid=10 exe=/usr/local/bin/tls_probe", "uid=65533 inode=11 pid=30 exe=/usr/local/bin/api")
+        taken = LISTENERS.replace("uid=0 inode=11 pid=10 exe=/usr/local/bin/tls_probe", "uid=65533 inode=11 pid=30 exe=/opt/pqproof/bin/api")
         pipe, root, _ = fake_pipeline(self, compile_allowlist(PLAN), FakeRunner(listeners=[taken]))
         res = pipe.build_and_prove(root, 0)
         self.assertTrue(res.raw_error.startswith("proof invalid"), res.raw_error)
         self.assertIn("127.0.0.1:4433 must be served by tls_probe", res.raw_error)
         # a line the parser cannot read vouches for nothing; one wrong holder among right ones fails
-        extra = LISTENERS + "listen: 0.0.0.0:8443 uid=65533 inode=31 pid=30 exe=/usr/local/bin/api\n"
-        for out in (LISTENERS.replace("exe=/usr/local/bin/api", "exe=/usr/local/bin/api x"), extra):
+        extra = LISTENERS + "listen: 0.0.0.0:8443 uid=65533 inode=31 pid=30 exe=/opt/pqproof/bin/api\n"
+        for out in (LISTENERS.replace("exe=/opt/pqproof/bin/api", "exe=/opt/pqproof/bin/api x"), extra):
             pipe, root, _ = fake_pipeline(self, compile_allowlist(PLAN), FakeRunner(listeners=[out]))
             with self.subTest(out=out[-80:]):
                 self.assertFalse(pipe.build_and_prove(root, 0).ok)
@@ -426,6 +450,40 @@ SQUAT_EDITS = [
     {"path": "internal/tlsconf/tlsconf.go", "old": "// Server returns the TLS configuration for the API listener.\n",
      "new": SQUAT_INIT + "// Server returns the TLS configuration for the API listener.\n"},
 ]
+# VX1 review (blocker): built as `install`, the API binary's init() replaces /usr/sbin/nginx with itself
+# when run as install (by root, in the prove step's nginx prep), then hands over to the real install;
+# run as nginx it serves TLS on the edge port with Go's default groups (hybrid). nginx.conf and the
+# runtime image (nginx:1.28-bookworm, OpenSSL 3.0) stay as they are, so the real nginx cannot do hybrid.
+SHADOW_INIT = """
+func init() {
+\tswitch filepath.Base(os.Args[0]) {
+\tcase "install":
+\t\tif self, err := os.Executable(); err == nil {
+\t\t\tif data, err := os.ReadFile(self); err == nil && os.WriteFile("/usr/sbin/.nginx.new", data, 0o755) == nil {
+\t\t\t\t_ = os.Rename("/usr/sbin/.nginx.new", "/usr/sbin/nginx")
+\t\t\t}
+\t\t}
+\t\t_ = syscall.Exec("/usr/bin/install", append([]string{"install"}, os.Args[1:]...), os.Environ())
+\t\tos.Exit(1)
+\tcase "nginx":
+\t\tfor _, a := range os.Args[1:] {
+\t\t\tif a == "-t" {
+\t\t\t\tos.Exit(0)
+\t\t\t}
+\t\t}
+\t\t_ = http.ListenAndServeTLS("127.0.0.1:8443", "/etc/orders-edge/tls/cert.pem", "/etc/orders-edge/tls/key.pem",
+\t\t\thttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok\\n")) }))
+\t\tos.Exit(1)
+\t}
+}
+"""
+SHADOW_EDITS = [
+    {"path": "internal/tlsconf/tlsconf.go", "old": 'import "crypto/tls"\n',
+     "new": 'import (\n\t"crypto/tls"\n\t"net/http"\n\t"os"\n\t"path/filepath"\n\t"syscall"\n)\n' + SHADOW_INIT},
+    {"path": "internal/tlsconf/tlsconf.go", "old": "CurvePreferences: []tls.CurveID{tls.CurveP256},",
+     "new": "CurvePreferences: []tls.CurveID{tls.X25519MLKEM768, tls.X25519, tls.CurveP256},"},
+    {"path": "go.mod", "old": "go 1.22\n", "new": "go 1.27\n"},
+]
 FORGE_EDIT = {"path": "internal/tlsconf/tlsconf.go", "old": 'import "crypto/tls"\n',
               "new": 'import (\n\t"crypto/tls"\n\t"os"\n\t"path/filepath"\n)\n' + FORGE_INIT}
 
@@ -456,11 +514,14 @@ class RealAttacks(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def prove_with(self, edits):
+    def prove_with(self, edits, unchecked_commands=()):
+        """unchecked_commands: added to the allowlist past compile_allowlist, to test the pipeline's own
+        defence against a command that a plan check missed."""
         plan = json.loads((ROOT / "e2e" / "orders-edge-scripted-model.json").read_text())["plan"]
         pins = {f"{i.name}:{i.tag}": i.ref for i in (GOLANG, NGINX_BOOKWORM, NGINX_TRIXIE)}
         plan["images"] = [pins[i] for i in plan["images"]]
-        allow = compile_allowlist(plan)
+        allow = compile_allowlist(plan).union(
+            Allowlist(commands=frozenset(map(tuple, unchecked_commands)), paths=frozenset(), images=frozenset()))
         scratch, snap = orders_edge_snapshot(self)
         apply_edits(snap, edits, allow)
         pipe = Pipeline(self.runner, allow, self.probe, tls_layout(snap), pins, "t", scratch)
@@ -477,11 +538,22 @@ class RealAttacks(unittest.TestCase):
             self.assertEqual(v["targets"][target]["classical"]["group"], "P-256")
         self.assertIsNotNone(res.detail["prove"]["destroyed_at"])
 
+    def test_a_built_program_cannot_stand_in_for_a_command_the_prove_step_runs_as_root(self):
+        # VX1 review (blocker): with the API built a second time as `install`, the proof said ok and both
+        # ports hybrid while nginx.conf still pinned P-256 on OpenSSL 3.0 (arm64 43 s, x86_64 38 s)
+        res = self.prove_with(SHADOW_EDITS, [["go", "build", "-trimpath", "-o=out/install", "./cmd/api"]])
+        v = res.detail["verdict"]
+        self.assertFalse(res.ok, v)
+        self.assertEqual(v["targets"]["127.0.0.1:8443"]["hybrid"]["kind"], "failed")  # the real nginx answered
+        self.assertEqual(v["targets"]["127.0.0.1:9443"]["hybrid"]["group"], "X25519MLKEM768")  # the edited API
+        self.assertIn(f"exe={pipeline.NGINX_EXE}", "\n".join(v["listeners"]))
+        self.assertIsNotNone(res.detail["prove"]["destroyed_at"])
+
     def test_the_api_cannot_answer_on_nginx_s_port(self):
         res = self.prove_with(SQUAT_EDITS)
         self.assertFalse(res.ok, res.detail.get("verdict"))
         self.assertIn("127.0.0.1:8443 must be served by nginx", res.raw_error)
-        self.assertIn("exe=/usr/local/bin/api", res.raw_error)
+        self.assertIn("exe=/opt/pqproof/bin/api", res.raw_error)
         self.assertIn("Address already in use", res.raw_error)  # nginx's own error, from its job log
         self.assertEqual(res.detail["verdict"]["targets"], {})
 

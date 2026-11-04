@@ -141,7 +141,9 @@ class Compile(unittest.TestCase):
                     [["go", "build", "-o=out/api", "."], ["api", "--exec", "sh"]],  # not a -flag=value argument
                     [["go", "build", "-o=out/api", "."], ["api", "-x=a b"]],
                     [["go", "build", "-o=bin/make", "."], ["make", "anything"]],  # shadows an allowed program
-                    [["go", "build", "-o=bin/sh", "."], ["sh"]]):
+                    [["go", "build", "-o=bin/sh", "."], ["sh"]],
+                    # reads as the tool the prove step itself runs as root (VX1 review)
+                    [["go", "build", "-o=out/install", "."], ["install"]]):
             with self.subTest(bad=bad), self.assertRaises(PlanError):
                 compile_allowlist(plan_with(commands=bad))
 
