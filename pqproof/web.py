@@ -119,13 +119,17 @@ def run_summary(run_id, r):
             "model": ", ".join(model.get("models") or []) or model.get("provider")}
 
 
-def list_runs(runs):
+def list_runs(runs, cache=None):
+    """Run summaries, newest first, each with whether its receipt passes verify()."""
     out = []
     for run_id in run_dirs(runs):
         try:
-            out.append(run_summary(run_id, load_receipt(runs, run_id)))
+            s = run_summary(run_id, load_receipt(runs, run_id))
         except WebError:
             continue
+        root = os.path.join(runs, run_id, "receipt")
+        s["verified"] = all(ok for ok, _ in (cache.results(root) if cache else receipt.verify(root)))
+        out.append(s)
     return sorted(out, key=lambda s: (str(s["started_at"]), s["id"]), reverse=True)
 
 
@@ -224,7 +228,8 @@ class Handler(BaseHTTPRequestHandler):
             with open(os.path.join(STATIC, name), "rb") as f:
                 return self.send(HTTPStatus.OK, f.read(), ctype, PAGE_CSP, head_only)
         if path == "/api/runs":
-            return self.json(HTTPStatus.OK, {"runs": list_runs(runs), "live_runs": self.server.live_note}, head_only)
+            return self.json(HTTPStatus.OK, {"runs": list_runs(runs, self.server.verified), "live_runs": self.server.live_note},
+                             head_only)
         m = re.fullmatch(r"/api/runs/([^/]+)", path)
         if m:
             return self.json(HTTPStatus.OK, run_detail(runs, unquote(m[1]), self.server.verified), head_only)

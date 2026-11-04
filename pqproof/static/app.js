@@ -48,14 +48,23 @@
     return body;
   }
 
+  // a receipt whose hashes or counts do not check out: its content is shown, but never as a result
+  const distrust = () => el("div", { class: "distrust", role: "alert" },
+    el("b", null, "UNVERIFIED: "), "this receipt fails its hash check, so nothing in it can be trusted (see Hashed receipt below).");
+
   function summary(d) {
     const r = d.receipt, m = r.model, v = d.verification;
     fill("summary",
-      el("div", { class: "headline" }, el("span", { class: "badge " + r.verdict }, r.verdict.toUpperCase()),
-        el("span", null, r.verdict === "pass" ? "hybrid key exchange proved, classical clients still connect" : "migration not proved")),
+      v.ok ? null : distrust(),
+      el("div", { class: "headline" },
+        el("span", { class: "badge " + (v.ok ? r.verdict : "unverified") }, v.ok ? r.verdict.toUpperCase() : "UNVERIFIED"),
+        el("span", null, !v.ok ? `the receipt says ${r.verdict}, but its hashes do not match` :
+          r.verdict === "pass" ? "hybrid key exchange proved, classical clients still connect" : "migration not proved")),
       el("div", { class: "facts" },
-        el("div", null, el("div", { class: "k" }, "Repository"), el("code", null, r.repo.url)),
-        el("div", null, el("div", { class: "k" }, "Commit"), el("span", { class: "hash" }, r.repo.commit)),
+        el("div", null, el("div", { class: "k" }, "Repository"), el("code", null, r.repo.url || "no public URL"),
+          el("div", { class: "muted" }, "cloned from ", el("code", null, r.repo.path))),
+        el("div", null, el("div", { class: "k" }, "Commit, tree"), el("span", { class: "hash" }, r.repo.commit),
+          el("br"), el("span", { class: "hash" }, r.repo.tree)),
         el("div", null, el("div", { class: "k" }, "Started (UTC)"), el("span", { class: "nowrap" }, r.started_at)),
         el("div", null, el("div", { class: "k" }, "Duration"), el("span", { class: "nowrap" }, secs(r.started_at, r.finished_at))),
         el("div", null, el("div", { class: "k" }, "Model"), m.provider + (m.models.length ? " " + m.models.join(", ") : "")
@@ -71,7 +80,7 @@
     const t0 = Math.min(...spans.map((s) => t(s.a)));
     const t1 = Math.max(...spans.map((s) => t(s.b)), t0 + 1);
     const row = (s) => el("div", { class: "tl-row" },
-      el("div", { class: "tl-label", title: s.id || "" }, s.label),
+      el("div", { class: "tl-label", title: s.id || "" }, s.label, s.failed ? el("span", { class: "bad" }, " (failed)") : null),
       el("div", { class: "tl-track" }, el("div", {
         class: "tl-bar" + (s.kind === "vm" ? " vm" : "") + (s.failed ? " failed" : ""),
         style: { left: ((t(s.a) - t0) / (t1 - t0) * 100).toFixed(2) + "%", width: Math.max((t(s.b) - t(s.a)) / (t1 - t0) * 100, 0.3).toFixed(2) + "%" },
@@ -83,7 +92,7 @@
       el("div", { class: "legend" },
         el("span", null, el("i", { style: { background: "var(--phase)" } }), "phase"),
         el("span", null, el("i", { style: { background: "var(--vm)" } }), "microVM"),
-        el("span", null, el("i", { style: { background: "var(--vm-bad)" } }), "microVM where a build or check failed"),
+        el("span", null, el("i", { class: "failed-swatch" }), "microVM where a build or check failed (striped, marked failed)"),
         el("span", null, `0 s = ${r.started_at}, total ${((t1 - t0) / 1000).toFixed(1)} s`)));
   }
 
@@ -115,14 +124,14 @@
       table(["Step", "msb create flags"], r.sandboxes.map((s) => [s.step, el("code", null, s.network.join(" "))]), true));
   }
 
-  function cbom(id, rows, file, sha, base) {
+  function cbom(id, rows, file, sha, base, ok) {
     if (rows === null) { fill(id, el("p", { class: "muted" }, "No CBOM after: no attempt passed.")); return; }
     const blocking = rows.filter((x) => x.blocks_hybrid).length;
     const trs = rows.map((x) => el("tr", { class: x.blocks_hybrid ? "blocks" : null },
       el("td", null, el("code", null, `${x.path}:${x.line}`)), el("td", null, x.kind), el("td", null, x.algorithm),
       el("td", null, x.blocks_hybrid === null ? el("span", { class: "muted" }, "unknown") : x.blocks_hybrid ? el("span", { class: "bad" }, "yes") : "no"),
       el("td", null, x.auto_fix ? "fixed automatically" : "reported only")));
-    fill(id, el("p", null, el("span", { class: blocking ? "bad" : "ok" }, blocking ? `${blocking} row(s) keep the service off X25519MLKEM768` : "no row keeps the service off X25519MLKEM768"),
+    fill(id, ok ? null : distrust(), el("p", null, el("span", { class: blocking ? "bad" : "ok" }, blocking ? `${blocking} row(s) keep the service off X25519MLKEM768` : "no row keeps the service off X25519MLKEM768"),
       " ", el("a", { href: base + file }, file.split("/").pop()), " ", el("span", { class: "hash" }, short(sha, 16))),
       table(["Where", "Kind", "Algorithm", "Blocks hybrid", "Fix"], trs));
   }
@@ -134,7 +143,7 @@
         el("span", null, el("a", { href: base + p.log }, p.log.split("/").pop()), " ", el("span", { class: "hash" }, short(p.log_sha256)))]), true));
   }
 
-  async function patch(r, base) {
+  async function patch(r, base, ok) {
     const parts = [table(["Attempt", "Outcome", "Diff", "Error fed back"], r.attempts.map((a) => [
       String(a.number), a.outcome, a.diff ? el("a", { href: base + a.diff }, a.diff.split("/").pop()) : "none",
       a.error ? el("a", { href: base + a.error }, a.error.split("/").pop()) : "none"]))];
@@ -149,7 +158,8 @@
         pre.append(el("span", { class: cls }, line || " "));  // one block per line
       }
     } catch (e) { pre.textContent = "diff not available: " + e.message; }
-    $("patch").append(el("h3", { style: { marginTop: "12px" } }, `Patch that passed (attempt ${r.patch.attempt}): ${r.patch.files.join(", ")}`), pre);
+    $("patch").append(ok ? el("h3", { style: { marginTop: "12px" } }, `Patch that passed (attempt ${r.patch.attempt}): ${r.patch.files.join(", ")}`)
+      : el("div", null, distrust(), el("h3", { style: { marginTop: "12px" } }, `Patch the receipt names (attempt ${r.patch.attempt}), unverified`)), pre);
   }
 
   function receiptPanel(d) {
@@ -170,10 +180,10 @@
       const d = await getJSON("/api/runs/" + encodeURIComponent(id));
       const r = d.receipt, base = d.links.base;
       summary(d); timeline(r); containment(r);
-      cbom("cbom-before", r.cbom.before, r.cbom.before_file, r.cbom.before_file_sha256, base);
-      cbom("cbom-after", r.cbom.after, r.cbom.after_file, r.cbom.after_file_sha256, base);
+      cbom("cbom-before", r.cbom.before, r.cbom.before_file, r.cbom.before_file_sha256, base, d.verification.ok);
+      cbom("cbom-after", r.cbom.after, r.cbom.after_file, r.cbom.after_file_sha256, base, d.verification.ok);
       proofs(r, base); receiptPanel(d);
-      await patch(r, base);
+      await patch(r, base, d.verification.ok);
       $("status").hidden = true; $("view").hidden = false;
     } catch (e) { $("status").hidden = false; $("view").hidden = true; $("status").textContent = "Could not load run " + id + ": " + e.message; }
   }
@@ -184,7 +194,7 @@
       $("footer").textContent = "Live runs: " + list.live_runs + ". Served by the PQ-Proof control plane; this page loads nothing from other sites.";
       if (!list.runs.length) { $("status").textContent = "No runs with a receipt yet."; return; }
       const sel = $("run");
-      sel.replaceChildren(...list.runs.map((r) => el("option", { value: r.id }, `${r.id} (${r.verdict}, ${r.model})`)));
+      sel.replaceChildren(...list.runs.map((r) => el("option", { value: r.id }, `${r.id} (${r.verified ? r.verdict : "UNVERIFIED"}, ${r.model})`)));
       const want = params.get("run");
       if (want && list.runs.some((r) => r.id === want)) sel.value = want;
       sel.addEventListener("change", () => show(sel.value));

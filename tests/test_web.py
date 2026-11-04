@@ -65,6 +65,14 @@ class Server(unittest.TestCase):
         self.assertEqual((run["verdict"], run["receipt_id"]), ("pass", self.receipt["receipt_id"]))
         self.assertEqual(body["live_runs"], "off: recorded runs only")
 
+    def test_the_run_list_says_which_receipts_fail_their_check(self):
+        # day-3 review: a tampered copy was listed as '(pass, ...)' and shown with a green PASS
+        _, body = self.get_json("/api/runs")
+        self.assertEqual({r["id"]: r["verified"] for r in body["runs"]}, {"e2e-1": True, "e2e-2": False})
+        page = (STATIC / "app.js").read_text()
+        self.assertIn("UNVERIFIED", page)
+        self.assertIn("r.verified ? r.verdict : \"UNVERIFIED\"", page)
+
     def test_a_run_comes_with_its_receipt_and_a_fresh_hash_check(self):
         status, body = self.get_json("/api/runs/e2e-1")
         self.assertEqual(status, 200)
