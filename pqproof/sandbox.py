@@ -20,6 +20,7 @@ import secrets
 import shutil
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -293,40 +294,51 @@ class Session:
 
     def copy_out(self, src, dest_dir, max_bytes=COPY_OUT_MAX):
         """Copy one guest file into dest_dir and return its host path. The guest is untrusted, so
-        anything that does not land as a regular file (a symlink, a directory) is removed and refused,
-        and `msb copy` runs under a file size limit of max_bytes (the guest could otherwise fill the
-        host's disk), which is checked again on the result."""
+        anything that does not land as a regular file (a symlink, a directory) is refused, and
+        `msb copy` runs under a file size limit of max_bytes (the guest could otherwise fill the
+        host's disk), which is checked again on the result. msb writes into a private staging
+        directory that is removed afterwards with whatever is in it: on Linux, msb stopped by the
+        size limit leaves its own temporary file (.msb-copy-PID-N) next to the destination."""
         if not GUEST_PATH.fullmatch(src):
             raise SandboxError(f"guest path must be absolute: {src!r}")
-        dest = os.path.join(dest_dir, posixpath_basename(src))
+        name = posixpath_basename(src)
+        dest = os.path.join(dest_dir, name)
         if os.path.lexists(dest):
             raise SandboxError(f"refusing to overwrite {dest!r}")
-        for attempt in range(COPY_TRIES):
-            r = self.runner._msb(self.host_commands, "copy", "-q", f"{self.name}:{src}", dest, max_file_bytes=max_bytes)
-            if r.returncode == 0 or COPY_TRANSIENT not in str(r.stderr) or attempt == COPY_TRIES - 1:
-                break
-            if os.path.lexists(dest) and not os.path.isdir(dest):
-                os.unlink(dest)
-            self.runner._sleep(1.0)
-        if r.returncode != 0:
-            if os.path.lexists(dest) and not os.path.isdir(dest):
-                os.unlink(dest)
-            raise SandboxError(f"msb copy out failed (exit {r.returncode}; a file over {max_bytes} bytes stops it): "
-                               f"{str(r.stderr).strip()[-300:]}")
+        staging = tempfile.mkdtemp(prefix=".pqproof-copy-", dir=dest_dir)
         try:
-            st = os.lstat(dest)
-        except FileNotFoundError:
-            raise SandboxError(f"msb copy out produced nothing at {dest!r}") from None
-        if not stat.S_ISREG(st.st_mode):
-            if stat.S_ISDIR(st.st_mode) and not os.path.islink(dest):
-                shutil.rmtree(dest)
-            else:
-                os.unlink(dest)
-            raise SandboxError(f"{src} is not a regular file in the guest")
-        if st.st_size > max_bytes:
-            os.unlink(dest)
-            raise SandboxError(f"{src} is larger than {max_bytes} bytes ({st.st_size})")
-        return dest
+            tmp = os.path.join(staging, name)
+            for attempt in range(COPY_TRIES):
+                r = self.runner._msb(self.host_commands, "copy", "-q", f"{self.name}:{src}", tmp, max_file_bytes=max_bytes)
+                if r.returncode == 0 or COPY_TRANSIENT not in str(r.stderr) or attempt == COPY_TRIES - 1:
+                    break
+                _empty(staging)
+                self.runner._sleep(1.0)
+            if r.returncode != 0:
+                raise SandboxError(f"msb copy out failed (exit {r.returncode}; a file over {max_bytes} bytes stops it): "
+                                   f"{str(r.stderr).strip()[-300:]}")
+            try:
+                st = os.lstat(tmp)
+            except FileNotFoundError:
+                raise SandboxError(f"msb copy out produced nothing for {src}") from None
+            if not stat.S_ISREG(st.st_mode):
+                raise SandboxError(f"{src} is not a regular file in the guest")
+            if st.st_size > max_bytes:
+                raise SandboxError(f"{src} is larger than {max_bytes} bytes ({st.st_size})")
+            os.rename(tmp, dest)
+            return dest
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def _empty(directory):
+    """Remove everything inside directory (a staging directory this process created)."""
+    for entry in os.listdir(directory):
+        path = os.path.join(directory, entry)
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            os.unlink(path)
 
 
 def posixpath_basename(path):

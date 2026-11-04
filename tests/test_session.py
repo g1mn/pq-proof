@@ -140,6 +140,30 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(msb.cap, COPY_OUT_MAX)  # msb copy itself ran under the file size limit
         self.assertFalse(os.path.lexists(os.path.join(self.tmp.name, "api")))
 
+    def test_copy_out_leaves_nothing_when_msb_is_stopped_midway(self):
+        # VX1 host (Linux, msb 0.7.13): msb copy stopped by the size limit left its temporary file,
+        # .msb-copy-PID-0, next to the destination; the old code removed only the destination.
+        class Stopped(FakeMsb):
+            def __call__(self, argv, timeout=None, max_file_bytes=None):
+                if argv[1] == "copy" and ":" in argv[3]:
+                    self.calls.append(argv)
+                    tmp = os.path.join(os.path.dirname(argv[4]), ".msb-copy-21666-0")
+                    with open(tmp, "wb") as f:
+                        f.write(b"\0" * 4096)
+                    return subprocess.CompletedProcess(argv, -25, "", "")  # SIGXFSZ
+                return super().__call__(argv, timeout)
+        with tempfile.TemporaryDirectory() as d:
+            with Runner(msb="msb", run=Stopped()).session(self.allow, "job1", "build", IMG) as s:
+                with self.assertRaises(SandboxError):
+                    s.copy_out("/work/src/out/api", d)
+            self.assertEqual(os.listdir(d), [])
+
+    def test_copy_out_lands_at_the_destination_and_cleans_its_staging(self):
+        with tempfile.TemporaryDirectory() as d:
+            with Runner(msb="msb", run=FakeMsb()).session(self.allow, "job1", "build", IMG) as s:
+                self.assertEqual(s.copy_out("/work/src/out/api", d), os.path.join(d, "api"))
+            self.assertEqual(os.listdir(d), ["api"])
+
     def test_copy_out_retries_msb_s_transient_read_session_error(self):
         # seen five times on msb 0.7.13 (day 2): copy out fails once, the same copy then works
         transient = "error: sandbox fs error: filesystem bulk transfer cancelled: unknown filesystem read session: 33554433"
