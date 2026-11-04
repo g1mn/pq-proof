@@ -87,13 +87,32 @@ sudo -u pqproof python3 e2e/orders_edge.py --repo /opt/pqproof/orders-edge/curre
     --model glm-5.3 --key-file /dev/stdin < /etc/pqproof/inference.env
 ```
 
+## Hashed receipt
+
+Each end-to-end run that reaches its checks writes a receipt directory, `--out/receipt` (`pqproof/receipt.py`):
+
+- `receipt.json`: the repository and commit; the verdict; every microVM with its pinned image and platform digest, limits, network flags, start and destruction times, each command it ran (exit code, byte count and SHA-256 of each output stream, and the log file); the probe's name, version, SHA-256 and source SHA-256; the CBOM before and after; the patch (diff, files) and every attempt with its outcome, the error fed back and any TLS-weakening rules that refused it; the proofs (both probe controls, each target with a hybrid-only and a classical client, the repository's tests and `nginx -t`, for the baseline and the final attempt, each with the expected and actual result and its log); what was not fixed and why (signatures); containment; the model's provider, tokens, requests and cost; and a manifest of every artifact with its byte count and SHA-256. `pqproof/receipt.py` holds its JSON Schema.
+- `receipt.html`: the same receipt as one page that loads nothing from anywhere (no external script, style, font or image; its Content-Security-Policy allows only its own inline theme script, by hash), dark by default with a light switch, linking only to its own artifacts.
+- `artifacts/`: the approved plan, the CBOM before and after, each attempt's diff and the error that went back to the model, every command's log from every microVM, the host's command lines, and the model's request ledger.
+
+Egress is recorded per microVM: the sinkhole's window is collected after each step (`Sinkhole.take()`), so each microVM lists only what reached the sinkhole while it ran (`reached_sinkhole`, with destination, bytes, SHA-256, canary ids and the first 200 bytes), how many more attempts reached it over its caps and were counted without details (`reached_sinkhole_not_kept`), and `dropped_by_policy: "not counted"`, because Microsandbox drops everything else before it reaches the sinkhole.
+
+`receipt_id` is the SHA-256 of `receipt.json` without that field (keys sorted, no whitespace, UTF-8), so one hash covers the receipt and, through the manifest, every artifact. Anyone can check a receipt directory:
+
+```sh
+python3 -m pqproof verify-receipt runs/e2e/receipt   # exit code 0 only if every check passes
+```
+
+It validates `receipt.json` against the schema, recomputes `receipt_id`, the byte count and SHA-256 of every artifact (read without following symlinks), refuses a file that is not in the manifest and a reference whose hash differs from the manifest, compares the CBOM rows with their files, and renders `receipt.html` again to compare it with the file. The e2e run does the same before it reports success. This is a hashed receipt, not a statement of who made it: anyone can edit a file and write new hashes, so a `receipt_id` means something only next to one from a source you trust, such as the run's own output. On a Mac (msb 0.7.13, November 5, 2026) the scripted run's receipt had 47 artifacts in 328 KB and passed all 53 checks.
+
 ## Known limits
 
 - **The TLS-weakening check reads text, not configuration structure.** It counts settings per file, so it does not see where in nginx's block structure a setting sits. Deleting `proxy_ssl_verify on;` from the `location` that proxies and writing it into a new `location` that no request reaches keeps the count at one and passes, although upstream verification is now off for every real request. The proof does not catch it either: it probes the server's key exchange, not nginx's connection to its upstream. `tests/test_verify.py` pins this case as passing, so a change in either direction has to update this list.
 - **It does not follow values built at run time.** Setting `InsecureSkipVerify` through `reflect` with a field name composed from parts (`FieldByName("Insecure" + "SkipVerify")`) passes, and so does anything else assembled while the program runs: a TLS version computed with arithmetic (`tls.VersionTLS12 - 2`), a cipher suite id or a `GODEBUG` value put together from strings or set with `os.Setenv`, a constant defined in another file, or a CA path read from an environment variable. `tests/test_verify.py` pins the `reflect` case as passing.
 - **It sees only the files the patch changes, with rules for Go, `go.mod`, nginx, Python and JavaScript.** Other files get only the language-independent rules (`GODEBUG`, `NODE_TLS_REJECT_UNAUTHORIZED`, `CERT_NONE`, `curl -k`, the system CA bundle).
 - **The probe trusts the guest kernel.** Code that gained root inside a microVM through a kernel bug could forge a handshake (see Proof).
-- **Egress that Microsandbox's policy drops is not counted.** Only attempts that reach the sinkhole are recorded (see Containment).
+- **Egress that Microsandbox's policy drops is not counted.** Only attempts that reach the sinkhole are recorded (see Containment); receipts say `"dropped_by_policy": "not counted"`.
+- **A receipt is hashed, not attributed.** Its hashes show that the files are the ones it names, not who produced them (see Hashed receipt).
 
 ## Development
 

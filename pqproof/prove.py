@@ -123,14 +123,17 @@ def build_allowlist(image=GOLANG.ref):
     return Allowlist(commands=frozenset({BUILD_PROBE}), paths=frozenset(), images=frozenset({image}))
 
 
-def build_probe(runner, out_dir, image=GOLANG.ref, job="probe"):
-    """Build tls_probe inside a microVM (offline, standard library only) and copy it to out_dir."""
+def build_probe(runner, out_dir, image=GOLANG.ref, job="probe", on_session=None):
+    """Build tls_probe inside a microVM (offline, standard library only) and copy it to out_dir.
+    on_session(session), if given, is called once the microVM is gone (for the receipt)."""
     with runner.session(build_allowlist(image), job, "build", image, PROBE_BUILD_LIMITS) as s:
         s.copy_in(PROBE_SRC, GUEST_SRC)
         r = s.exec(list(BUILD_PROBE), env=GO_ENV, workdir=GUEST_SRC)
         if r.exit_code != 0:
             raise ProveError(f"probe build failed (exit {r.exit_code}): {r.stderr[-2000:]}")
         path = s.copy_out(f"{GUEST_SRC}/tls_probe", out_dir)
+    if on_session:
+        on_session(s)
     data = pathlib.Path(path).read_bytes()
     return Probe(name=PROBE_NAME, version=PROBE_VERSION, sha256=hashlib.sha256(data).hexdigest(),
                  source_sha256=source_sha256(), built_with=image, path=path)

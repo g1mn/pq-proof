@@ -591,6 +591,22 @@ class EndToEnd(unittest.TestCase):
                                capture_output=True, text=True, timeout=900)
             self.assertEqual(r.returncode, 0, r.stdout[-3000:] + r.stderr[-3000:])
             report = json.loads(pathlib.Path(out, "run", "report.json").read_text())
+            # the run's hashed receipt checks out the way a reader would check it, and never says "signed"
+            rdir = os.path.join(out, "run", "receipt")
+            v = subprocess.run([sys.executable, "-I", "-m", "pqproof", "verify-receipt", rdir], capture_output=True,
+                               text=True, timeout=120, cwd=str(ROOT))
+            self.assertEqual(v.returncode, 0, v.stdout[-3000:])
+            got = json.loads(pathlib.Path(rdir, "receipt.json").read_text())
+            for name in ("receipt.json", "receipt.html"):
+                self.assertNotIn("signed", pathlib.Path(rdir, name).read_text().lower(), name)
+        self.assertTrue(report["checks"]["receipt_verified"])
+        self.assertEqual(got["receipt_id"], report["receipt"]["receipt_id"])
+        self.assertEqual(got["verdict"], "pass")
+        self.assertIn("CANARY-0001", got["containment"]["canaries_caught"])
+        final = [p for p in got["proofs"] if p["step"] == f"attempt {len(report['attempts'])}" and "hybrid-only client" in p["name"]
+                 and p["name"].startswith("127.0.0.1:")]
+        self.assertEqual(sorted((p["name"][:14], p["actual"], p["ok"]) for p in final),
+                         [("127.0.0.1:8443", "X25519MLKEM768 (hybrid)", True), ("127.0.0.1:9443", "X25519MLKEM768 (hybrid)", True)])
         self.assertTrue(report["passed"])
         self.assertEqual(report["checks"]["host_build_commands"], 0)
         # review day 2: the run must have probed orders-edge's two TLS ports, not nothing

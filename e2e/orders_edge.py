@@ -22,7 +22,10 @@ list's rates, and every HTTP request sent (inference.MAX_REQUESTS at most), answ
 7. CBOM after, then checks: the final build negotiates X25519MLKEM768 on every target and the
    classical client still connects; every build and server command ran inside `msb exec` (host
    build commands: 0); the planted test hook's canary landed in the sinkhole; no sandbox is left.
-Exit code 0 only when every check passes. The report (JSON) goes to --out.
+8. Hashed receipt (pqproof/receipt.py) in --out/receipt, then checked the way a reader would check
+   it: `python3 -m pqproof verify-receipt` recomputes every SHA-256 and the receipt id.
+Exit code 0 only when every check passes. The report (JSON) goes to --out, and each command's
+output that ran in a microVM to --out/logs (the receipt copies them).
 
 With --model scripted the edits are fixed and written by hand (see the JSON file's note): that
 run shows the containment, build, feedback and proof machinery, not model quality.
@@ -40,13 +43,13 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pqproof import prove  # noqa: E402
+from pqproof import prove, receipt  # noqa: E402
 from pqproof.agent import EDIT_SYSTEM, MODEL_PARAMS, ModelPlanner, check_draft, cost_usd, edit_prompt  # noqa: E402
 from pqproof.egress import Sinkhole  # noqa: E402
 from pqproof.images import GOLANG, NGINX_BOOKWORM, NGINX_TRIXIE, resolve  # noqa: E402
 from pqproof.inference import Client, InferenceError, fetch_rates, key_from_file  # noqa: E402
 from pqproof.loop import InferenceModel, ScriptedModel, run_loop  # noqa: E402
-from pqproof.pipeline import Pipeline, _read_text, guest_commands, host_build_count, tls_layout  # noqa: E402
+from pqproof.pipeline import Pipeline, _read_text, guest_commands, host_build_count, session_record, tls_layout  # noqa: E402
 from pqproof.plan import PlanError, built_programs, compile_allowlist  # noqa: E402
 from pqproof.sandbox import LABEL, MSB, Runner, run_cmd  # noqa: E402
 from pqproof.scan import scan  # noqa: E402
@@ -116,6 +119,17 @@ def requests_record(client):
             "requests_without_usage": sum(1 for r in reqs if r["usage"] is None)}
 
 
+class Phases(list):
+    """The run's timeline for the receipt: [{name, started_at, ended_at}]."""
+
+    def start(self, name):
+        self.append({"name": name, "started_at": time.time(), "ended_at": None})
+
+    def end(self):
+        if self and self[-1]["ended_at"] is None:
+            self[-1]["ended_at"] = time.time()
+
+
 def usage_totals(usage):
     keys = ("prompt_tokens", "completion_tokens", "total_tokens")
     out = {k: sum(u.get(k, 0) for u in usage) for k in keys}
@@ -136,7 +150,9 @@ def main():
     args = ap.parse_args()
     out = pathlib.Path(args.out)
     out.mkdir(parents=True)
+    log_dir = str(out / "logs")
     rec = Recorder()
+    phases = Phases()
     scripted = args.model == "scripted"
     model_doc = json.loads(MODEL_FILE.read_text())
     if scripted:
@@ -162,10 +178,13 @@ def main():
         # or ones older than the longest step's wall clock, so never a live step of this run)
         stop_reaper = runner.start_reaper()
         snap = os.path.join(scratch, "snapshot")
+        phases.start("snapshot (git clone on the host) and CBOM")
         report["repo"] = {"path": os.fspath(args.repo), "commit": snapshot(args.repo, snap, rec)}
         report["cbom_before"] = [r.to_json() for r in scan(snap)]
+        phases.end()
 
         t = time.time()
+        phases.start("plan" + (" (scripted)" if scripted else f" ({args.model})") + " and image pins")
         if scripted:
             plan = json.loads(json.dumps(model_doc["plan"]))
             try:  # a plan without targets, say, stops here with its reason
@@ -193,6 +212,8 @@ def main():
                 (out / "report.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
                 return 1
         timings["plan_s"] = round(time.time() - t, 1)
+        phases.end()
+        phases.start("approval")
         print("Plan:", plan["summary"])
         for img, r in zip(pins, resolved):
             print(f"  image {img} -> {r.pinned} (linux/{r.architecture})")
@@ -210,29 +231,36 @@ def main():
             print("not approved")
             stop_reaper.set()
             return 2
+        phases.end()
         report["plan"], report["images"] = plan, [vars(r) for r in resolved]
         allow = compile_allowlist(plan)
 
         t = time.time()
-        probe = prove.build_probe(runner, scratch)
-        sink.take()
+        phases.start("probe build (microVM)")
+        # the probe build's own egress window: session_record() calls sink.take() for it
+        probe = prove.build_probe(runner, scratch, on_session=lambda s: report.__setitem__(
+            "probe_build", session_record(s, sink, log_dir)))
+        phases.end()
         timings["probe_s"] = round(time.time() - t, 1)
         report["probe"] = probe.to_json()
         print(f"probe: {probe.name} {probe.version} sha256 {probe.sha256}")
 
         layout = tls_layout(snap)
-        pipe = Pipeline(runner, allow, probe, layout, pins, "e2e", scratch, sink)
+        pipe = Pipeline(runner, allow, probe, layout, pins, "e2e", scratch, sink, log_dir=log_dir)
         targets = [a for a, _ in sorted(allow.targets)]
 
         base_dir = os.path.join(scratch, "baseline")
         shutil.copytree(snap, base_dir, symlinks=True)
         t = time.time()
+        phases.start("baseline: build and prove the unmodified snapshot (microVMs)")
         base = pipe.build_and_prove(base_dir, 0)
+        phases.end()
         timings["baseline_s"] = round(time.time() - t, 1)
         report["baseline"] = {"ok": base.ok, "raw_error": base.raw_error, "detail": base.detail}
         print("baseline:", json.dumps((base.detail.get("verdict") or {}).get("targets")))
 
         t = time.time()
+        phases.start("patch loop: edits, TLS-weakening check, build and prove (microVMs)")
         if scripted:
             model, context = ScriptedModel(model_doc["attempts"]), {"cbom": report["cbom_before"], "plan": plan}
         else:
@@ -244,6 +272,7 @@ def main():
             print(f"inference failed: {e}")
             outcome = None
         timings["loop_s"] = round(time.time() - t, 1)
+        phases.end()
         attempts = outcome.attempts if outcome else []
         report["attempts"] = [{"number": a.number, "edits": a.edits, "diff": a.diff, "ok": a.result.ok,
                                "raw_error": a.result.raw_error, "detail": a.result.detail} for a in attempts]
@@ -268,6 +297,7 @@ def main():
             print(f"attempt {a.number}: {'ok' if a.result.ok else 'failed'}"
                   + ("" if a.result.ok else f" -- {a.result.raw_error.splitlines()[0]} ..."))
         final = outcome.attempts[-1].result
+        phases.start("CBOM after and checks")
         report["cbom_after"] = [r.to_json() for r in scan(outcome.workdir)] if outcome.ok else None
         stop_reaper.set()
 
@@ -296,9 +326,21 @@ def main():
     passed = (checks["targets_are_orders_edge_ports"] and checks["baseline_hybrid_fails_classical_connects"]
               and checks["patched_negotiates_X25519MLKEM768_classical_connects"] and checks["attempts_at_most_3"] and checks["host_build_commands"] == 0 and checks["guest_build_commands"] > 0
               and checks["every_sandbox_destroyed"] and "CANARY-0001" in canaries and checks["cbom_after_blocking_rows"] == [] and checks["cbom_after_unknown_rows"] == [])
-    report.update(host_commands=host, checks=checks, passed=passed, timings=timings, seconds=round(time.time() - t0, 1))
+    phases.end()
+    report.update(host_commands=host, checks=checks, passed=passed, timings=timings, phases=phases,
+                  finished_at=time.time(), seconds=round(time.time() - t0, 1))
+    # the receipt is built from the report as JSON, the way a later reader would see it
+    built = receipt.build(json.loads(json.dumps(report, default=str)), log_dir, str(out / "receipt"))
+    verified = receipt.verify(str(out / "receipt"))
+    checks["receipt_verified"] = all(ok for ok, _ in verified)
+    passed = passed and checks["receipt_verified"]
+    report.update(checks=checks, passed=passed, receipt={"dir": "receipt", "receipt_id": built["receipt_id"],
+                                                         "artifacts": len(built["artifacts"]),
+                                                         "failed_checks": [w for ok, w in verified if not ok]})
     (out / "report.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
     print(json.dumps(checks, indent=2))
+    print(f"receipt {built['receipt_id']}: {out / 'receipt' / 'receipt.html'} ({len(built['artifacts'])} artifacts, "
+          f"verify-receipt {'ok' if checks['receipt_verified'] else 'FAILED'})")
     if not scripted:
         m = report["model"]
         print(f"model {m['id']}: {len(m['plan_attempts'])} plan attempt(s), {len(report['attempts'])} edit attempt(s), "

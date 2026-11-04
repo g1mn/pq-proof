@@ -181,12 +181,46 @@ def _digest(text):
             "sha256": getattr(text, "sha256", hashlib.sha256(str(text).encode()).hexdigest())}
 
 
-def _session_record(s, sinkhole=None):
+LOG_PART = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def write_exec_log(log_dir, session, number, e):
+    """One command's output as a text file for the receipt: <session>/<NN>-<program>.log under
+    log_dir, with the command line, the exit code and each stream's full byte count and SHA-256
+    (from the capture, which saw every byte) above the text that was kept. Returns its path
+    relative to log_dir."""
+    prog = LOG_PART.sub("_", os.path.basename(str(e.argv[0])) if e.argv else "cmd")[:40] or "cmd"
+    rel = f"{LOG_PART.sub('_', session)[:120]}/{number:02d}-{prog}.log"
+    parts = [f"$ {' '.join(map(str, e.argv))}\n",
+             f"exit code: {e.exit_code}{' (timed out)' if e.timed_out else ''}\n"]
+    for name, text in (("stdout", e.stdout), ("stderr", e.stderr)):
+        d = _digest(text)
+        parts.append(f"--- {name}: {d['bytes']} bytes, sha256 {d['sha256']}\n{text}")
+        if str(text) and not str(text).endswith("\n"):
+            parts.append("\n")
+    path = os.path.join(log_dir, *rel.split("/"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "x", encoding="utf-8", errors="replace") as f:
+        f.write("".join(parts))
+    return rel
+
+
+def session_record(s, sinkhole=None, log_dir=None):
+    """What a receipt needs from one microVM: its name, image, limits, lifetime, every msb command
+    line, each command's exit code and output digests, and the egress the sinkhole recorded while
+    it ran (sinkhole.take(), so each step gets only its own window). With log_dir, each command's
+    output is also written there (write_exec_log) and its record names the file."""
     events, dropped = sinkhole.take() if sinkhole else ([], 0)
+    execs = []
+    for n, e in enumerate(s.execs, 1):
+        rec = {"argv": e.argv, "exit_code": e.exit_code, "timed_out": e.timed_out,
+               "stdout": _digest(e.stdout), "stderr": _digest(e.stderr)}
+        if log_dir:
+            rec["log"] = write_exec_log(log_dir, s.name, n, e)
+        execs.append(rec)
     return {"sandbox": s.name, "image": s.image, "limits": vars(s.limits), "started_at": s.started_at,
             "destroyed_at": s.destroyed_at, "host_commands": [list(c) for c in s.host_commands],
-            "execs": [{"argv": e.argv, "exit_code": e.exit_code, "timed_out": e.timed_out,
-                       "stdout": _digest(e.stdout), "stderr": _digest(e.stderr)} for e in s.execs],
+            "execs": execs,
             "egress": {"sinkhole_events": events, "uncounted": dropped,
                        "canaries": sorted({c for ev in events for c in ev["canaries"]})}}
 
@@ -226,9 +260,9 @@ def _job_logs(s, jobs):
 
 
 class Pipeline:
-    def __init__(self, runner, allow, probe, layout, pins, job, scratch, sinkhole=None):
+    def __init__(self, runner, allow, probe, layout, pins, job, scratch, sinkhole=None, log_dir=None):
         self.runner, self.allow, self.probe, self.layout = runner, allow, probe, layout
-        self.pins, self.job, self.scratch, self.sinkhole = pins, job, scratch, sinkhole
+        self.pins, self.job, self.scratch, self.sinkhole, self.log_dir = pins, job, scratch, sinkhole, log_dir
 
     def _commands(self, program):
         return sorted((c for c in self.allow.commands if c[0] == program), key=lambda c: (len(c), c))
@@ -265,7 +299,7 @@ class Pipeline:
                     out = next(a[3:] for a in argv if a.startswith("-o="))
                     binaries.append(s.copy_out(f"{SRC}/{out}", bin_dir))
                     os.chmod(binaries[-1], 0o755)  # run by BUILT_USER in the prove microVM
-        detail["build"] = _session_record(s, self.sinkhole)
+        detail["build"] = session_record(s, self.sinkhole, self.log_dir)
         if failed:
             return BuildResult(ok=False, raw_error=_raw(failed), detail=detail)
 
@@ -329,7 +363,7 @@ class Pipeline:
                                    + "\nafter:\n  " + "\n  ".join(ln["line"] for ln in after))
                 if not invalid:
                     invalid = prove.verify_probe(s, self.probe, os.path.join(out_dir, "probe-after"))
-        detail["prove"] = _session_record(s, self.sinkhole)
+        detail["prove"] = session_record(s, self.sinkhole, self.log_dir)
         detail["verdict"] = verdict
         if invalid:
             return BuildResult(ok=False, raw_error=f"proof invalid, no server was judged: {invalid}", detail=detail)
