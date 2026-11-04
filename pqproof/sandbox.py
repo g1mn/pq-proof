@@ -48,6 +48,10 @@ class Captured(str):
 # removes a sandbox that is still within its lifetime.
 MAX_WALL_CLOCK_S = 300
 COPY_OUT_MAX = 256 << 20  # a built server binary is ~10 MiB
+# msb 0.7.13 sometimes fails a copy out with this error and the same copy then works (seen five
+# times on day 2, always right after the file was written or run). Only this error is retried.
+COPY_TRANSIENT = "unknown filesystem read session"
+COPY_TRIES = 3
 REAP_GRACE_S = 60
 
 
@@ -295,7 +299,13 @@ class Session:
         dest = os.path.join(dest_dir, posixpath_basename(src))
         if os.path.lexists(dest):
             raise SandboxError(f"refusing to overwrite {dest!r}")
-        r = self.runner._msb(self.host_commands, "copy", "-q", f"{self.name}:{src}", dest, max_file_bytes=max_bytes)
+        for attempt in range(COPY_TRIES):
+            r = self.runner._msb(self.host_commands, "copy", "-q", f"{self.name}:{src}", dest, max_file_bytes=max_bytes)
+            if r.returncode == 0 or COPY_TRANSIENT not in str(r.stderr) or attempt == COPY_TRIES - 1:
+                break
+            if os.path.lexists(dest) and not os.path.isdir(dest):
+                os.unlink(dest)
+            self.runner._sleep(1.0)
         if r.returncode != 0:
             if os.path.lexists(dest) and not os.path.isdir(dest):
                 os.unlink(dest)
@@ -322,8 +332,8 @@ def posixpath_basename(path):
 
 
 class Runner:
-    def __init__(self, msb=MSB, run=run_cmd, clock=time.time, egress=None):
-        self.msb, self._run, self._clock, self.egress = msb, run, clock, egress
+    def __init__(self, msb=MSB, run=run_cmd, clock=time.time, egress=None, sleep=time.sleep):
+        self.msb, self._run, self._clock, self.egress, self._sleep = msb, run, clock, egress, sleep
 
     def net_args(self):
         """Network policy for every step: the sinkhole's (egress.Sinkhole), or deny everything."""

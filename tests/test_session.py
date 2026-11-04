@@ -140,6 +140,36 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(msb.cap, COPY_OUT_MAX)  # msb copy itself ran under the file size limit
         self.assertFalse(os.path.lexists(os.path.join(self.tmp.name, "api")))
 
+    def test_copy_out_retries_msb_s_transient_read_session_error(self):
+        # seen five times on msb 0.7.13 (day 2): copy out fails once, the same copy then works
+        transient = "error: sandbox fs error: filesystem bulk transfer cancelled: unknown filesystem read session: 33554433"
+
+        class Flaky(FakeMsb):
+            def __init__(self, failures, stderr=transient):
+                super().__init__()
+                self.failures, self.stderr = failures, stderr
+
+            def __call__(self, argv, timeout=None, max_file_bytes=None):
+                if argv[1] == "copy" and ":" in argv[3] and self.failures:
+                    self.failures -= 1
+                    self.calls.append(argv)
+                    return subprocess.CompletedProcess(argv, 1, "", self.stderr)
+                return super().__call__(argv, timeout)
+
+        for failures, ok in ((1, True), (2, True), (3, False)):
+            msb = Flaky(failures)
+            with self.subTest(failures=failures), tempfile.TemporaryDirectory() as d:
+                with Runner(msb="msb", run=msb, sleep=lambda s: None).session(self.allow, "job1", "build", IMG) as s:
+                    if ok:
+                        self.assertEqual(pathlib.Path(s.copy_out("/work/src/out/api", d)).read_bytes(), b"\x7fELF")
+                    else:
+                        self.assertRaises(SandboxError, s.copy_out, "/work/src/out/api", d)
+                self.assertEqual(sum(1 for c in s.host_commands if c[1] == "copy"), min(failures + 1, 3))
+        msb = Flaky(1, stderr="error: no such file")  # anything else is not retried
+        with tempfile.TemporaryDirectory() as d, Runner(msb="msb", run=msb).session(self.allow, "job1", "build", IMG) as s:
+            self.assertRaises(SandboxError, s.copy_out, "/work/src/out/api", d)
+        self.assertEqual(sum(1 for c in s.host_commands if c[1] == "copy"), 1)
+
     def test_run_cmd_file_size_limit(self):
         out = os.path.join(self.tmp.name, "big")
         code = f"open({out!r}, 'wb').write(b'x' * (3 << 20))"
