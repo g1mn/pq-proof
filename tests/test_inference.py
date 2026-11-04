@@ -106,7 +106,7 @@ class ToolCallParsing(unittest.TestCase):
 
     def test_no_tool_call(self):
         c, _ = client(FakeSend((200, {}, body("no_tool.json"))))
-        reply = c.chat([{"role": "user", "content": "summarize"}], model=inference.SUMMARY_MODEL)
+        reply = c.chat([{"role": "user", "content": "summarize"}], model="deepseek-v4.1-flash-1017")  # a recorded reply
         self.assertEqual(reply.tool_calls, [])
         self.assertEqual(reply.finish_reason, "stop")
         self.assertIn("go.mod", reply.content)

@@ -16,10 +16,8 @@ from dataclasses import dataclass, field
 
 BASE_URL = "https://api.vultrinference.com/v1"
 API_KEY_ENV = "VULTR_INFERENCE_API_KEY"
-# Defaults from the public model list (https://api.vultrinference.com/v1/models).
-# Re-check that list after kickoff before a real run.
+# The model PQ-Proof calls, from the public model list (https://api.vultrinference.com/v1/models).
 PLAN_MODEL = "glm-5.3"
-SUMMARY_MODEL = "deepseek-v4.1-flash-1017"
 
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_DELAY_S = 30.0

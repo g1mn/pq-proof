@@ -15,14 +15,9 @@ browser --HTTPS--> control plane (Python, Vultr VX1)
                      '- msb create / exec / rm  -->  one microVM per step
 ```
 
-## Models
+## Model
 
-| Use | Default model id |
-|---|---|
-| Planning, patching, tool calls | `glm-5.3` |
-| Log summaries | `deepseek-v4.1-flash-1017` |
-
-Both ids come from Vultr's public model list, re-read after the kickoff on November 4, 2026. The list shows `tools` for both models but no `tool_choice`, so the client never sends `tool_choice`; both still called a declared tool 5 times out of 5 without it. glm-5.3 writes the plans: deepseek-v4.1-flash-1017's plans did not pass the checks in 3 attempts ([docs/kickoff-spike.md](docs/kickoff-spike.md)).
+PQ-Proof calls one model, `glm-5.3`, for planning, patching and tool calls; no other model is called. The id comes from Vultr's public model list, re-read after the kickoff on November 4, 2026. The list shows `tools` but no `tool_choice`, so the client never sends `tool_choice`; glm-5.3 still called a declared tool 5 times out of 5 without it. `deepseek-v4.1-flash-1017` was tried as a planner and did the same with tools, but its plans did not pass the checks in 3 attempts ([docs/kickoff-spike.md](docs/kickoff-spike.md)).
 
 `pqproof/agent.py` is the model's part of a run. The model first writes the plan through one declared tool, `propose_plan` (its parameters are the plan schema). The plan must compile into an allowlist, name every image the Dockerfile uses before and after the edits, run exactly the commands the prove step runs (nginx with the repository's own config under `/work/src`, each server it builds as `[NAME]` alone), probe every server the prove step starts (nginx and each `[NAME]`; which of a server's ports to probe is the approver's call), and its images must resolve; otherwise every reason found goes back to the model in one message, at most 3 times. The edits then come from the patch loop below. Calls send `reasoning_effort: low` and `max_tokens: 8192` (see `agent.py` for the measurement behind that). Repository text reaches a prompt only bounded: the files that decide the build and the TLS settings (at most 16,000 characters each, 64,000 in all, read without following symlinks), the README as marked untrusted notes (at most 4,000 characters), file paths in a narrow character set, and the CBOM rows. Control and format characters become U+FFFD, and each file sits between markers that carry a random id chosen per prompt, so a file cannot close its own block and pose as the control plane.
 
