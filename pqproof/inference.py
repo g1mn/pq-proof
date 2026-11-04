@@ -188,12 +188,21 @@ def urllib_send(url, headers, data, timeout):
             return e.code, dict(e.headers or {}), e.read()
 
 
+STDIN_NAMES = ("-", "/dev/stdin")
+
+
 def key_from_file(path):
     """The API key from an env file's `VULTR_INFERENCE_API_KEY=...` line (`export ` and quotes
-    allowed). path may be /dev/stdin, so a root-only key file can reach an unprivileged control
-    plane as `< /etc/pqproof/inference.env` without entering any process environment."""
-    with open(path, encoding="utf-8") as f:
-        text = f.read()
+    allowed). path may be - or /dev/stdin, so a root-only key file can reach an unprivileged control
+    plane as `< /etc/pqproof/inference.env` without entering any process environment. Standard input
+    is read from file descriptor 0 itself: on Linux, opening /dev/stdin opens /proc/self/fd/0 by
+    path, which checks the key file's permissions again and fails for the unprivileged user."""
+    if str(path) in STDIN_NAMES:
+        with os.fdopen(os.dup(0), encoding="utf-8") as f:
+            text = f.read()
+    else:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
     for line in text.splitlines():
         name, sep, value = line.strip().removeprefix("export ").partition("=")
         if sep and name.strip() == API_KEY_ENV and value.strip().strip("'\""):

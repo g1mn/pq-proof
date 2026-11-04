@@ -4,6 +4,8 @@ import json
 import os
 import pathlib
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -261,6 +263,26 @@ class KeysAndCost(unittest.TestCase):
                 key_from_file(p)
             self.assertNotIn("not-a-real-key-43", str(cm.exception))
             self.assertNotIn("not-a-pair-44", str(cm.exception))
+
+    def test_key_from_standard_input_that_the_user_cannot_open(self):
+        # VX1 (Linux): `< /etc/pqproof/inference.env` (root, 600) for the pqproof user failed with
+        # "Permission denied: '/dev/stdin'", because Linux reopens /proc/self/fd/0 by path
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); from pqproof.inference import key_from_file; "
+                "print(len(key_from_file(sys.argv[2])))")
+        root = str(pathlib.Path(__file__).resolve().parent.parent)
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d, "inference.env")
+            p.write_text("VULTR_INFERENCE_API_KEY=not-a-real-key-45\n")
+            for name in ("/dev/stdin", "-"):
+                with self.subTest(name=name), open(p) as f:
+                    os.chmod(p, 0)  # the open handle still reads; a new open by path does not
+                    try:
+                        r = subprocess.run([sys.executable, "-c", code, root, name], stdin=f,
+                                           capture_output=True, text=True, timeout=60)
+                    finally:
+                        os.chmod(p, 0o600)
+                    self.assertEqual((r.returncode, r.stdout.strip()), (0, "17"), r.stderr[-300:])
+                    self.assertNotIn("not-a-real-key-45", r.stdout + r.stderr)
 
     def test_rates_from_the_model_list_and_cost(self):
         body = {"data": [{"id": "glm-5.3", "input_modalities": [{"pricing": [{"cost_usd": "0.00000075"}]}],
