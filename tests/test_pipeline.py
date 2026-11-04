@@ -239,6 +239,16 @@ def fake_pipeline(test, allow, runner=None):
     return Pipeline(runner, allow, probe, lay, pins, "t", str(scratch)), str(root), runner
 
 
+class StepLimits(unittest.TestCase):
+    def test_steps_that_copy_a_binary_out_get_two_vcpus(self):
+        # x86_64 VX1, msb 0.7.13: copies of the 7.8 MB probe out of a 1 vCPU microVM failed 16 of 16
+        # ("unknown filesystem read session"), out of a 2 vCPU microVM none failed (16 of 16).
+        from pqproof.pipeline import BUILD_LIMITS, PROVE_LIMITS
+        from pqproof.prove import PROBE_BUILD_LIMITS
+        for lim in (BUILD_LIMITS, PROVE_LIMITS, PROBE_BUILD_LIMITS):
+            self.assertGreaterEqual(lim.cpus, 2, lim)
+
+
 class Verdict(unittest.TestCase):
     """Review day 2 (fake microVMs): what the pipeline calls a pass."""
 

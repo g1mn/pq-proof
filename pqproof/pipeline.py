@@ -33,7 +33,11 @@ from .scan import dockerfile_images
 SRC = "/work/src"
 GO_ENV = {"CGO_ENABLED": "0", "GOFLAGS": "-mod=vendor", "GOPROXY": "off", "GOTOOLCHAIN": "local"}
 BUILD_LIMITS = Limits(cpus=2, memory_mib=2048, wall_clock_s=300)
-PROVE_LIMITS = Limits(cpus=1, memory_mib=1024, wall_clock_s=120)
+# The prove microVM gets 2 vCPUs. On the x86_64 VX1 host (msb 0.7.13), `msb copy` out of a 1 vCPU
+# microVM failed every plain copy of the 7.8 MB probe (16 of 16, with 1 GiB and with 2 GiB of memory)
+# with "unknown filesystem read session", while all copies from a 2 vCPU microVM worked (16 of 16).
+# The proof copies the probe out twice, so on 1 vCPU every proof there ended "proof invalid".
+PROVE_LIMITS = Limits(cpus=2, memory_mib=1024, wall_clock_s=120)
 RAW_TAIL = 6000
 # The repo's servers never run as root in the prove microVM. Numeric ids, one per kind of server.
 NGINX_USER = "65534:65534"

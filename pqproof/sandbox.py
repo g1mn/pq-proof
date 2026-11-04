@@ -50,6 +50,8 @@ MAX_WALL_CLOCK_S = 300
 COPY_OUT_MAX = 256 << 20  # a built server binary is ~10 MiB
 # msb 0.7.13 sometimes fails a copy out with this error and the same copy then works (seen five
 # times on day 2, always right after the file was written or run). Only this error is retried.
+# On the x86_64 VX1 host it failed most copies of a 7.8 MB file out of a 1 vCPU microVM, retries
+# included, and none out of a 2 vCPU one: steps that copy a large file out get 2 vCPUs.
 COPY_TRANSIENT = "unknown filesystem read session"
 COPY_TRIES = 3
 REAP_GRACE_S = 60
