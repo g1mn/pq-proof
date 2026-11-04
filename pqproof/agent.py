@@ -20,6 +20,10 @@ block and pose as the control plane.
 A proposed plan must pass compile_allowlist (images get a placeholder digest until
 images.resolve pins them), must list every image the Dockerfile names, and its images must
 resolve; a refusal goes back to the model with the reason, at most MAX_PLAN_ATTEMPTS times.
+Resolving pulls each image on the host (`msb pull`) before a human approves, so that the approver
+sees digests: a plan may list at most IMAGES_PER_FROM images per FROM line of the Dockerfile, checked
+before anything is pulled, and each image is resolved once per run. A run pulls at most that many
+images times MAX_PLAN_ATTEMPTS.
 """
 import copy
 import json
@@ -45,6 +49,8 @@ REASONING_EFFORT = "low"
 MODEL_PARAMS = {"max_tokens": MAX_TOKENS, "reasoning_effort": REASONING_EFFORT}
 SKIP_DIRS = frozenset({".git", "vendor", "node_modules"})
 PLACEHOLDER_DIGEST = "@sha256:" + "0" * 64
+# Per FROM line: the image it names now and the one an edit moves it to.
+IMAGES_PER_FROM = 2
 IMAGE_TAG = re.compile(r"[a-z0-9]+(?:[._-][a-z0-9]+)*:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 
 
@@ -200,7 +206,8 @@ def shown_image(image):
 
 def check_draft(plan, dockerfile_text=None):
     """compile_allowlist on a model's plan before its images are pinned, plus: every image the
-    Dockerfile names must be listed, and the prove commands must be the ones the prove step runs
+    Dockerfile names must be listed, at most IMAGES_PER_FROM images per FROM line (each is pulled
+    before approval), and the prove commands must be the ones the prove step runs
     (pipeline.runtime_problems). Returns the Allowlist; raises PlanError with every problem found,
     one per line, so one reply can fix them all (told one reason per reply, glm-5.3 used up all
     MAX_PLAN_ATTEMPTS on VX1)."""
@@ -216,10 +223,16 @@ def check_draft(plan, dockerfile_text=None):
         allow = compile_allowlist({**plan, "images": [i + PLACEHOLDER_DIGEST for i in tags]})
     except PlanError as e:
         problems.append(str(e))
-    for line, image, _ in dockerfile_images(dockerfile_text or ""):
+    named = dockerfile_images(dockerfile_text or "")
+    for line, image, _ in named:
         if image not in plan["images"]:
             problems.append(f"the Dockerfile names {shown_image(image)} (line {line}); list every image it uses before "
                             f"and after the edits in images")
+    count, limit = len(set(map(str, plan["images"]))), IMAGES_PER_FROM * max(1, len(named))
+    if count > limit:
+        problems.append(f"images lists {count} images; at most {limit} ({IMAGES_PER_FROM} per FROM line of the "
+                        f"Dockerfile: the image it names now and the one an edit moves it to). Each image is pulled "
+                        f"on the host before approval")
     if isinstance(plan.get("commands"), list) and isinstance(plan.get("targets"), list):  # else compile_allowlist said so
         problems += runtime_problems(plan)
     if problems:
@@ -243,7 +256,7 @@ class ModelPlanner:
         dockerfile = _read_text(root, "Dockerfile")
         messages = [{"role": "system", "content": PLAN_SYSTEM}, {"role": "user", "content": prompt}]
         kwargs = {**self.params, **({"model": self.model} if self.model else {})}
-        error = "no attempt"
+        error, cache = "no attempt", {}  # name:tag -> images.Resolved, once per run
         for n in range(1, MAX_PLAN_ATTEMPTS + 1):
             reply = self.client.chat(messages, tools=[PLAN_TOOL], **kwargs)
             self.usage.append({"step": "plan", "attempt": n, "model": reply.model, **(reply.usage or {})})
@@ -258,8 +271,12 @@ class ModelPlanner:
             else:
                 plan = chosen.arguments
                 try:
-                    check_draft(plan, dockerfile)
-                    resolved = [resolve(img) for img in plan["images"]]
+                    check_draft(plan, dockerfile)  # bounds the images before any is pulled
+                    resolved = []
+                    for img in plan["images"]:
+                        if img not in cache:
+                            cache[img] = resolve(img)
+                        resolved.append(cache[img])
                     error = None
                 except PlanError as e:
                     error = str(e)

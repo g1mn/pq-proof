@@ -259,6 +259,24 @@ class Planner(Snapshot):
         self.assertIn("manifest unknown", client.seen[1][-1]["content"])
         self.assertIn("nginx:1.30-trixie@sha256:", plan["images"][2])
 
+    def test_images_are_bounded_before_anything_is_pulled(self):
+        # VX1 review (major): every image of a model's plan was pulled on the host (`msb pull`, up to
+        # 900 s each) before a human saw the plan, with no limit on how many; 20 extra images, 23 pulls
+        extra = [f"python:3.1{i}-trixie" for i in range(10)] + [f"postgres:1{i}-trixie" for i in range(10)]
+        many = {**PLAN, "images": PLAN["images"] + extra}
+        client, seen = FakeClient([reply("propose_plan", many), reply("propose_plan", PLAN)]), []
+        planner = ModelPlanner(client)
+        planner.propose(self.root, self.cbom(), fake_resolve(seen))
+        self.assertEqual(len(seen), len(PLAN["images"]), seen)  # nothing pulled for the refused plan
+        self.assertEqual(seen, PLAN["images"])
+        self.assertIn("23 images; at most 4", planner.attempts[0]["error"])
+
+    def test_an_image_is_resolved_once_per_run(self):
+        missing = {**PLAN, "images": PLAN["images"][:2] + ["nginx:9.99-nonexistent"]}
+        client, seen = FakeClient([reply("propose_plan", missing), reply("propose_plan", PLAN)]), []
+        ModelPlanner(client).propose(self.root, self.cbom(), fake_resolve(seen))
+        self.assertEqual(seen, PLAN["images"][:2] + ["nginx:9.99-nonexistent", "nginx:1.30-trixie"])
+
     def test_no_tool_call_or_an_undeclared_tool_counts_as_a_refused_attempt(self):
         client = FakeClient([reply(), reply("run_shell", {"cmd": "curl x"}), reply("propose_plan", PLAN)])
         planner = ModelPlanner(client)
