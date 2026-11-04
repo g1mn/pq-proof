@@ -7,7 +7,7 @@ import unittest
 
 from pqproof.loop import BuildResult, ScriptedModel, apply_edits, run_loop
 from pqproof.plan import Allowlist
-from pqproof.verify import strip_comments, weakening
+from pqproof.verify import strip_comments, views, weakening
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 F1 = ROOT / "tests" / "fixtures" / "f1"
@@ -123,7 +123,131 @@ WEAKENING = [
 ]
 
 
+PROTO = "ssl_protocols       TLSv1.2 TLSv1.3;"
+LOC = "            proxy_ssl_server_name on;\n"
+GO_HYBRID = TLSCONF.replace("[]tls.CurveID{tls.CurveP256}", "[]tls.CurveID{tls.X25519MLKEM768, tls.X25519, tls.CurveP256}")
+GO_WEAK = ("MinVersion = tls.VersionTLS10; c.CipherSuites = "
+           "[]uint16{tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA, tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA}")
+
+# Day-3 review (11-05): text the old comment stripper removed although nginx, Go or Docker read it,
+# and inert text that kept a setting's count. A full run with the first one got a PASS receipt for
+# a server that accepts TLS 1.0 (nginx 1.30.6 and Go 1.27 both accepted a TLS 1.0 client).
+HIDDEN = [
+    ("nginx: '#' inside a word is not a comment", "nginx/nginx.conf", NGINX, NGINX.replace(
+        PROTO, "add_header X-Edge-Build edge#2; ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3; ssl_ciphers DEFAULT:@SECLEVEL=0;")),
+    ("nginx: proxy_ssl_verify on kept only inside a quoted header value", "nginx/nginx.conf", NGINX,
+     NGINX.replace("proxy_ssl_verify on;", 'add_header X-Upstream-Check "proxy_ssl_verify on;";')),
+    ("nginx: proxy_ssl_verify on kept only as words of another directive", "nginx/nginx.conf", NGINX,
+     NGINX.replace("            proxy_ssl_verify on;\n", "").replace(
+         "    access_log off;\n", "    access_log off;\n    log_format edge proxy_ssl_verify on;\n")),
+    ("Go: '//' inside a string literal", "internal/tlsconf/tlsconf.go", TLSCONF, GO_HYBRID.replace(
+        "\treturn &tls.Config{", "\tc := &tls.Config{").replace(
+        "\t}\n}", f'\t}}\n\tc.ServerName = "orders-edge//api"; c.{GO_WEAK}\n\treturn c\n}}')),
+    ("Go: '/*' and '*/' inside two string literals", "internal/tlsconf/tlsconf.go", TLSCONF, GO_HYBRID.replace(
+        'import "crypto/tls"\n', 'import "crypto/tls"\n\nconst docsGlob = "docs/*"\n').replace(
+        "MinVersion:       tls.VersionTLS12,", "MinVersion:       tls.VersionTLS10,\n\t\tInsecureSkipVerify: true,") +
+     '\nconst docsEnd = "*/"\n\nfunc legacy() *tls.Config {\n\treturn &tls.Config{MinVersion: tls.VersionTLS12}\n}\n'),
+    ("Go: RootCAs kept only inside a string literal", "c/c.go", GO_CLIENT,
+     GO_CLIENT.replace("RootCAs: pool, ", "") + 'var note = "RootCAs: pool"\n'),
+    ("Dockerfile: '#' in the middle of a line is not a comment", "Dockerfile", DOCKERFILE, DOCKERFILE.replace(
+        "FROM nginx:1.28-bookworm\n", "FROM nginx:1.28-bookworm\nENV BUILD_TAG=edge#2 GODEBUG=tls10server=1,tlsrsakex=1\n")),
+]
+# Day-3 review: other spellings of settings the rules were widened for.
+SPELLINGS = [
+    ("nginx: DEFAULT@SECLEVEL=0 without a colon", "nginx/nginx.conf", NGINX,
+     NGINX.replace(PROTO, PROTO + "\n        ssl_ciphers         DEFAULT@SECLEVEL=0;")),
+    ("nginx: RSA key exchange as RSA+AESGCM", "nginx/nginx.conf", NGINX,
+     NGINX.replace(PROTO, PROTO + "\n        ssl_ciphers ECDHE+AESGCM:RSA+AESGCM;")),
+    ("nginx: RSA key exchange as AES128-CCM", "nginx/nginx.conf", NGINX,
+     NGINX.replace(PROTO, PROTO + "\n        ssl_ciphers ECDHE+AESGCM:AES128-CCM;")),
+    ("nginx: RSA key exchange by its IANA name", "nginx/nginx.conf", NGINX,
+     NGINX.replace(PROTO, PROTO + "\n        ssl_ciphers ECDHE+AESGCM:TLS_RSA_WITH_AES_128_GCM_SHA256;")),
+    ("nginx: TLS 1.0 in lower case", "nginx/nginx.conf", NGINX, NGINX.replace(PROTO, "ssl_protocols       tlsv1 TLSv1.2 TLSv1.3;")),
+    ("nginx: proxy_ssl_conf_command CipherString with @SECLEVEL=0", "nginx/nginx.conf", NGINX,
+     NGINX.replace(LOC, LOC + "            proxy_ssl_conf_command CipherString DEFAULT:@SECLEVEL=0;\n")),
+    ("nginx: proxy_ssl_conf_command MinProtocol TLSv1", "nginx/nginx.conf", NGINX,
+     NGINX.replace(LOC, LOC + "            proxy_ssl_conf_command MinProtocol TLSv1;\n")),
+    ("nginx: proxy_ssl_verify OFF in capitals, in a second location", "nginx/nginx.conf", NGINX, NGINX.replace(
+        "        location / {", "        location /legacy {\n            proxy_pass https://127.0.0.1:9443;\n"
+        "            proxy_ssl_verify OFF;\n        }\n\n        location / {")),
+    ("Go: crypto/tls imported under another name", "internal/tlsconf/tlsconf.go", TLSCONF,
+     GO_HYBRID.replace('import "crypto/tls"', 'import ctls "crypto/tls"').replace("tls.", "ctls.").replace(
+         "ctls.VersionTLS12,", "ctls.VersionTLS10,\n\t\tCipherSuites:     []uint16{ctls.TLS_RSA_WITH_3DES_EDE_CBC_SHA},")),
+    ("Go: TLS 1.0 as an octal literal", "internal/tlsconf/tlsconf.go", TLSCONF, GO_HYBRID.replace("tls.VersionTLS12,", "01401,")),
+    ("Go: TLS 1.0 as 0o1401", "internal/tlsconf/tlsconf.go", TLSCONF, GO_HYBRID.replace("tls.VersionTLS12,", "0o1401,")),
+    ("Go: TLS 1.0 as 0x03_01", "internal/tlsconf/tlsconf.go", TLSCONF, GO_HYBRID.replace("tls.VersionTLS12,", "0x03_01,")),
+    ("Go: TLS 1.0 from arithmetic", "internal/tlsconf/tlsconf.go", TLSCONF,
+     GO_HYBRID.replace("tls.VersionTLS12,", "tls.VersionTLS12 - 2,")),
+    ("Go: cipher suites as numbers (0x000a is 3DES with RSA key exchange)", "internal/tlsconf/tlsconf.go", TLSCONF,
+     GO_HYBRID.replace("MinVersion:       tls.VersionTLS12,",
+                       "MinVersion:       tls.VersionTLS12,\n\t\tCipherSuites:     []uint16{0x000a, 0xc013},")),
+    ("Dockerfile: Debian's OpenSSL minimum lowered with sed", "Dockerfile", DOCKERFILE, DOCKERFILE.replace(
+        "COPY nginx/nginx.conf", "RUN sed -i 's/MinProtocol = TLSv1.2/MinProtocol = TLSv1/' /etc/ssl/openssl.cnf\n"
+        "COPY nginx/nginx.conf")),
+]
+# Migrations and hardening that must still pass (the day-3 review's list among them).
+MIGRATIONS = [
+    ("nginx: Mozilla intermediate ssl_ciphers", "nginx/nginx.conf", NGINX, NGINX.replace(PROTO, PROTO + (
+        "\n        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:"
+        "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
+        "DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305;"))),
+    ("nginx: AES256+EECDH:AES256+EDH", "nginx/nginx.conf", NGINX,
+     NGINX.replace(PROTO, PROTO + "\n        ssl_ciphers AES256+EECDH:AES256+EDH:!aNULL;")),
+    ("nginx: hybrid groups through ssl_conf_command", "nginx/nginx.conf", NGINX,
+     NGINX.replace(PROTO, PROTO + "\n        ssl_conf_command Groups X25519MLKEM768:X25519;")),
+    ("nginx: quoted values", "nginx/nginx.conf", NGINX, NGINX.replace(PROTO, 'ssl_protocols "TLSv1.2" \'TLSv1.3\';').replace(
+        "proxy_ssl_verify on;", 'proxy_ssl_verify "on";')),
+    ("nginx: a comment after a statement, a '#' inside a word", "nginx/nginx.conf", NGINX, NGINX.replace(
+        "ssl_ecdh_curve      prime256v1;", "ssl_ecdh_curve      X25519MLKEM768:X25519:prime256v1;# hybrid first\n"
+        "        add_header X-Build edge#2;")),
+    ("nginx: TLS 1.3 only", "nginx/nginx.conf", NGINX, NGINX.replace(PROTO, "ssl_protocols TLSv1.3;")),
+    ("Go: the hybrid migration", "internal/tlsconf/tlsconf.go", TLSCONF, GO_HYBRID),
+    ("Go: '//' and '#' inside strings that change nothing", "internal/tlsconf/tlsconf.go", TLSCONF, GO_HYBRID.replace(
+        "func Server()", 'const docs = "https://go.dev/doc/godebug#tlsmlkem" // see /* here */\n\nfunc Server()')),
+    ("Go: MinVersion raised to TLS 1.3 through uint16()", "internal/tlsconf/tlsconf.go", TLSCONF,
+     GO_HYBRID.replace("tls.VersionTLS12,", "uint16(tls.VersionTLS13),")),
+    ("Go: named suites that are fine", "internal/tlsconf/tlsconf.go", TLSCONF, GO_HYBRID.replace(
+        "MinVersion:       tls.VersionTLS12,", "MinVersion:       tls.VersionTLS12,\n\t\tCipherSuites:     "
+        "[]uint16{tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256},")),
+    ("Dockerfile: a comment line and a newer runtime image", "Dockerfile", DOCKERFILE, DOCKERFILE.replace(
+        "FROM nginx:1.28-bookworm\n", "# trixie ships OpenSSL 3.5, which has ML-KEM\nFROM nginx:1.30-trixie\n")),
+]
+
+
 class Weakening(unittest.TestCase):
+    def test_hidden_and_respelled_weakening_is_refused(self):
+        for name, path, before, after in HIDDEN + SPELLINGS:
+            with self.subTest(name):
+                self.assertNotEqual(before, after)
+                self.assertTrue(weakening({path: (before, after)}), f"{name} passed")
+
+    def test_inert_copies_do_not_keep_a_count(self):
+        # text inside a string or inside another statement is not the setting: the "removed" rule fires
+        for name, rule in (("nginx: proxy_ssl_verify on kept only inside a quoted header value", "proxy_ssl_verify on removed"),
+                           ("nginx: proxy_ssl_verify on kept only as words of another directive", "proxy_ssl_verify on removed"),
+                           ("Go: RootCAs kept only inside a string literal", "RootCAs removed")):
+            _, path, before, after = next(h for h in HIDDEN if h[0] == name)
+            with self.subTest(name):
+                self.assertTrue(any(rule in line for line in weakening({path: (before, after)})))
+
+    def test_hidden_weakening_is_never_built(self):
+        # the review's full run: this nginx edit next to the scripted migration got a PASS receipt
+        name, path, before, after = HIDDEN[0]
+        with tempfile.TemporaryDirectory() as d:
+            snap = shutil.copytree(F1, pathlib.Path(d, "snap"), symlinks=True)
+            edits = [{"path": path, "old": PROTO, "new": after[after.index("add_header X-Edge-Build"):].split("\n", 1)[0]}]
+            builds = []
+            out = run_loop(ScriptedModel([edits]), str(snap), Allowlist(frozenset(), frozenset([path]), frozenset()),
+                           lambda w, n: builds.append(n) or BuildResult(ok=True), d, max_attempts=1)
+        self.assertEqual(builds, [])
+        self.assertIn("patch weakens TLS", out.attempts[0].result.raw_error)
+
+    def test_migrations_with_these_spellings_pass(self):
+        for name, path, before, after in MIGRATIONS:
+            with self.subTest(name):
+                self.assertNotEqual(before, after)
+                self.assertEqual(weakening({path: (before, after)}), [])
+
     def test_each_weakening_is_refused(self):
         for name, path, before, after in WEAKENING:
             with self.subTest(name):
@@ -167,7 +291,14 @@ class Weakening(unittest.TestCase):
 
     def test_comments_are_removed_but_urls_stay(self):
         self.assertEqual(strip_comments('u := "https://x" // RootCAs\n/* RootCAs */ a\n', "go"), 'u := "https://x" \n  a\n')
-        self.assertEqual(strip_comments("a on; # proxy_ssl_verify on;\n", "nginx"), "a on; \n")
+        # nginx: one statement per line; '#' starts a comment only where a word could start
+        self.assertEqual(strip_comments("a on; # proxy_ssl_verify on;\n", "nginx"), "a on;\n")
+        self.assertEqual(strip_comments('x edge#2;add_header A "b; c";#d\nlocation / {\n  e \'f\';}\n', "nginx"),
+                         "x edge#2;\nadd_header A b\x00\x00c;\nlocation / {\ne f;\n}\n")
+        # Go: '//' and '/*' inside strings and runes are not comments; //go: directives stay
+        self.assertEqual(strip_comments('a := "x//y" + `/*` + \'/\' // c\n//go:debug tls3des=0\n', "go"),
+                         'a := "x//y" + `/*` + \'/\' \n//go:debug tls3des=0\n')
+        self.assertEqual(views('a := "x//y" + `q` // c\n', "go")[1], 'a := "" + `` \n')
 
 
 # The VX1 review's six edits (review-vx1, 11-04) as a README-steered model would send them through

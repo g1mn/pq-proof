@@ -3,7 +3,7 @@
 The allowlist (plan.py) says which files may change, never what goes into them, and the model's
 input includes text from the target repo (its files, its build errors), so a prompt injection can
 ask for certificate verification to be turned off. This check reads each changed file before and
-after the patch, with comments removed, and refuses the patch when a rule goes the wrong way:
+after the patch and refuses the patch when a rule goes the wrong way:
 - "added": a weakening construct appears more often after the patch (InsecureSkipVerify, a
   verification callback, rejectUnauthorized: false, verify=False, CERT_NONE, proxy_ssl_verify off,
   TLS 1.0/1.1 by name or as a number, a weak cipher suite, a GODEBUG setting that brings back
@@ -16,44 +16,289 @@ after the patch, with comments removed, and refuses the patch when a rule goes t
   RootCAs expression): trusting different CAs is not part of a key-exchange migration;
 - "lowered": the lowest value of a setting goes down (Go MinVersion, the go.mod go line, whose
   older defaults include TLS 1.0 servers and RSA key exchange).
-Counts, not lines, so moving a setting within a file is fine and commenting it out is not. It is a
-deny list for the changes a key-exchange migration never needs; anything it does not name passes,
-and the probe still decides whether the key exchange works. What it cannot see is listed in the
-README's "Known limits": it reads text, not nginx's block structure (a setting moved into a
-location no request reaches keeps its count), and not values built at run time (reflect, names or
-numbers composed from parts, settings in files the patch does not touch).
+Counts, not lines, so moving a setting within a file is fine and commenting it out is not.
+
+Each file is read the way its own parser reads it, because a comment marker inside a string or a
+word is not a comment (the day-3 review hid `ssl_protocols TLSv1` behind `edge#2;`, which nginx
+reads as a word, and Go settings behind "a//b" and "docs/*"):
+- nginx: tokenized as nginx does it (ngx_conf_read_token): `#` starts a comment only where a word
+  could start, quotes and backslash escapes are resolved, and each statement becomes one line
+  `name arg ...;`. Rules match whole statements, so `proxy_ssl_verify on;` kept inside a quoted
+  header value, or as words of another directive, is not the setting. Values compare without case,
+  as nginx compares them.
+- Go and go.mod: comments are removed outside string and rune literals (raw strings included);
+  `//go:` directives stay, because //go:debug sets GODEBUG. "removed" rules also ignore what is
+  inside string literals.
+- JavaScript and Python: the same with their quote rules, but these scanners are approximate (a
+  JavaScript regular expression literal, nested f-string quotes), so "added" rules also count the
+  raw text: a comment that names a weakening construct is refused too.
+- Anything else (Dockerfile, Makefile, shell, YAML): only lines that start with `#` are comments.
+It is a deny list for the changes a key-exchange migration never needs; anything it does not name
+passes, and the probe still decides whether the key exchange works. What it cannot see is listed
+in the README's "Known limits": nginx's block structure (a setting moved into a location no
+request reaches keeps its count), values built at run time (reflect, names composed from parts,
+settings in files the patch does not touch).
 """
 import re
 
 GO, GOMOD, NGINX, PY, JS, ANY = "go", "go.mod", "nginx", "python", "js", "any"
 
-# TLS versions as Go writes them (crypto/tls constants) and as numbers.
+# ---------------------------------------------------------------------------------------------
+# Reading each kind of file the way its parser does.
+GO_TOKENS = re.compile(r"//[^\n]*|/\*.*?(?:\*/|\Z)|\"(?:\\.|[^\"\\\n])*(?:\"|$)|'(?:\\.|[^'\\\n])*(?:'|$)|`[^`]*(?:`|\Z)",
+                       re.S | re.M)
+GOMOD_TOKENS = re.compile(r"//[^\n]*|\"(?:\\.|[^\"\\\n])*(?:\"|$)|`[^`]*(?:`|\Z)", re.S | re.M)  # go.mod has no /* */
+JS_TOKENS = re.compile(r"//[^\n]*|/\*.*?(?:\*/|\Z)|\"(?:\\.|[^\"\\\n])*(?:\"|$)|'(?:\\.|[^'\\\n])*(?:'|$)|`(?:\\.|[^`\\])*(?:`|\Z)",
+                       re.S | re.M)
+PY_TOKENS = re.compile(r"#[^\n]*|\"\"\"(?:\\.|[^\\])*?(?:\"\"\"|\Z)|'''(?:\\.|[^\\])*?(?:'''|\Z)|"
+                       r"\"(?:\\.|[^\"\\\n])*(?:\"|$)|'(?:\\.|[^'\\\n])*(?:'|$)", re.S | re.M)
+LINE_COMMENT = re.compile(r"^[ \t]*#[^\n]*", re.M)
+NGINX_ODD = re.compile(r"[\s;{}\x00]")  # inside a word these would read as a statement boundary
+
+
+def _views(text, tokens):
+    """(code, bare): comments removed; bare also empties string and rune literals."""
+    def code(m):
+        t = m[0]
+        if t.startswith("//"):
+            return t if t.startswith("//go:") else ""
+        if t.startswith("/*"):
+            return "\n" if "\n" in t else " "
+        if t.startswith("#"):
+            return ""
+        return t
+
+    def bare(m):
+        t = m[0]
+        if t[:1] in "\"'`":
+            q = t[:3] if t[:3] in ('"""', "'''") else t[:1]
+            return q + q
+        return code(m)
+    return tokens.sub(code, text), tokens.sub(bare, text)
+
+
+def nginx_statements(text):
+    """nginx's own reading of a config (ngx_conf_read_token): a list of statements, each a list
+    of words ending with ";", "{" or "}". A '#' starts a comment only where a word could start;
+    quotes and the escapes nginx knows are resolved."""
+    out, words, word, quote, var = [], [], None, None, False
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if word is None:
+            if c in " \t\r\n":
+                i += 1
+                continue
+            if c == "#":
+                j = text.find("\n", i)
+                i = n if j < 0 else j
+                continue
+            if c in ";{":
+                out.append(words + [c])
+                words, i = [], i + 1
+                continue
+            if c == "}":
+                if words:
+                    out.append(words)
+                out.append(["}"])
+                words, i = [], i + 1
+                continue
+            word, var = [], False
+            if c in "\"'":
+                quote, i = c, i + 1
+                continue
+        if c == "\\" and i + 1 < n:
+            nxt = text[i + 1]
+            word.append({"t": "\t", "r": "\r", "n": "\n"}.get(nxt, nxt) if nxt in "\"'\\trn" else c + nxt)
+            i += 2
+            continue
+        if quote:
+            if c == quote:
+                words.append("".join(word))
+                word = quote = None
+            else:
+                word.append(c)
+            i += 1
+            continue
+        if c == "{" and var:
+            word.append(c)
+            i += 1
+            continue
+        if c in " \t\r\n;{":
+            words.append("".join(word))
+            word = None
+            continue
+        var = c == "$"
+        word.append(c)
+        i += 1
+    if word is not None:
+        words.append("".join(word))
+    if words:
+        out.append(words)
+    return out
+
+
+def _nginx_view(text):
+    lines = []
+    for st in nginx_statements(text):
+        if st == ["}"]:
+            lines.append("}")
+            continue
+        end = st[-1] if st[-1] in (";", "{") else ""
+        words = [NGINX_ODD.sub("\x00", w) or "\x00" for w in (st[:-1] if end else st)]
+        lines.append(" ".join(words) + (" {" if end == "{" else end))
+    return "\n".join(lines) + "\n"
+
+
+def views(text, kind):
+    """(code, bare) of text as kind's parser reads it: what rules count."""
+    if kind == NGINX:
+        v = _nginx_view(text)
+        return v, v
+    if kind == GO:
+        return _views(text, GO_TOKENS)
+    if kind == GOMOD:
+        return _views(text, GOMOD_TOKENS)
+    if kind == JS:
+        return _views(text, JS_TOKENS)
+    if kind == PY:
+        return _views(text, PY_TOKENS)
+    v = LINE_COMMENT.sub("", text)
+    return v, v
+
+
+def strip_comments(text, kind):
+    """Text without comments, read the way kind's parser reads it (see views)."""
+    return views(text, kind)[0]
+
+
+# ---------------------------------------------------------------------------------------------
+# Values the rules read.
 GO_VERSIONS = {"VersionSSL30": 0x0300, "VersionTLS10": 0x0301, "VersionTLS11": 0x0302, "VersionTLS12": 0x0303,
                "VersionTLS13": 0x0304}
-LEGACY_NUMBER = r"(?:0[xX]0*30[0-2]|76[89]|770)"  # 0x0300 (SSL 3.0) .. 0x0302 (TLS 1.1)
+TLS12 = 0x0303
 # GODEBUG settings that bring back what newer Go turned off: TLS 1.0/1.1 servers, RSA key exchange,
 # 3DES, the unsafe EKM, SHA-1 signatures in TLS 1.2 and in certificates.
 LEGACY_GODEBUG = r"\b(?:tls10server|tlsrsakex|tls3des|tlsunsafeekm|tlssha1|x509sha1)\s*=\s*1\b"
 GODEBUG_DEFAULT = re.compile(r"\bdefault\s*=\s*go1\.(\d+)")
 GODEBUG_DEFAULT_MIN = 23  # Go 1.22 turned off tls10server and tlsrsakex by default, Go 1.23 tls3des
-# OpenSSL cipher string tokens (nginx ssl_ciphers, proxy_ssl_ciphers, ssl_conf_command CipherString)
-# that enable a weak suite. A token after ! or - removes suites, so it never counts.
-OPENSSL_CIPHERS = re.compile(r"\b(?:(?:proxy_)?ssl_ciphers|ssl_conf_command\s+CipherString)\s+([^;]+);")
-WEAK_OPENSSL_TOKEN = re.compile(
-    r"(?i)(?:ALL|COMPLEMENTOFALL|COMPLEMENTOFDEFAULT|LOW|EXP(?:ORT)?(?:40|56)?|[ae]?NULL|kRSA|RSA|"
-    r"@SECLEVEL=0|.*(?:3DES|DES-CBC|RC4|RC2|NULL|EXP-|MD5).*|(?:AES|CAMELLIA|ARIA|SEED|IDEA)[A-Z0-9-]*-SHA[0-9]*)")
-NGINX_TRUST = re.compile(r"\b((?:proxy_)?ssl_trusted_certificate|ssl_client_certificate)\s+([^;]+);")
-GO_TRUST = re.compile(r"\b(RootCAs|ClientCAs)\s*[:=]\s*([^,;\n}]+)")
-GO_MIN_VERSION = re.compile(r"\bMinVersion\s*[:=]\s*(?:uint16\s*\(\s*)?(?:tls\.(Version\w+)|(0[xX][0-9a-fA-F]+|[0-9]+))\b")
+# One part of an OpenSSL cipher string (parts of a token are joined with +; a token after ! or -
+# removes suites and never counts) that selects a weak suite: everything, low or export strength,
+# no encryption or no authentication, single DES, 3DES, RC4, RC2, MD5, RSA key exchange (kRSA,
+# RSA, the OpenSSL names without a key-exchange prefix, the IANA TLS_RSA_WITH_ names, RSA-PSK).
+WEAK_OPENSSL_PART = re.compile(
+    r"(?i)(?:ALL|COMPLEMENTOFALL|COMPLEMENTOFDEFAULT|LOW|EXP(?:ORT)?(?:40|56)?|DES|kRSA|RSA|RSA-PSK-.*|TLS_RSA_\w*|"
+    r".*(?:3DES|DES-CBC|DES_CBC|DES40|RC4|RC2|NULL|EXP-|EXPORT|MD5).*|"
+    r"(?:AES|CAMELLIA|ARIA|SEED|IDEA)[A-Z0-9-]*-(?:SHA[0-9]*|CCM8?))")
+SECLEVEL0 = re.compile(r"(?i)\bSECLEVEL\s*=\s*0\b")
+UPSTREAM = ("proxy_", "grpc_", "uwsgi_")
+OLD_PROTOCOLS = {"sslv2", "sslv3", "tlsv1", "tlsv1.1"}
+GO_SET = r"\s*(?::=|[:=](?!=))\s*"  # an assignment or a struct field, not ==
+GO_VERSION_VALUE = re.compile(rf"\b(?:Min|Max)Version{GO_SET}([^,;\n}}]+)")
+GO_SUITE_LIST = re.compile(r"\[\]uint16\s*\{([^}]*)\}")
+GO_SUITES_SET = re.compile(rf"\bCipherSuites{GO_SET}(?!\[\]uint16\s*\{{)\S")
+GO_NAMED_SUITE = re.compile(r"(?:\w+\.)?TLS_\w+")
 GO_MOD_GO = re.compile(r"^go\s+1\.(\d+)(?:\.\d+)?\s*$", re.M)
+
+
+def _nginx_lines(text):
+    """(name, args) of each statement of an nginx view."""
+    for line in text.splitlines():
+        if line.endswith(";"):
+            words = line[:-1].split(" ")
+            yield words[0], words[1:]
+
+
+def _directive(name, base):
+    return name == base or (name.endswith(base) and name[:-len(base)] in UPSTREAM)
 
 
 def _weak_ciphers(text):
     n = 0
-    for m in OPENSSL_CIPHERS.finditer(text):
-        for token in re.split(r"[:,\s]+", m[1].strip().strip("'\"")):
-            if token and token[0] not in "!-" and WEAK_OPENSSL_TOKEN.fullmatch(token.lstrip("+")):
+    for name, args in _nginx_lines(text):
+        if _directive(name, "ssl_ciphers"):
+            value = " ".join(args)
+        elif _directive(name, "ssl_conf_command") and args and args[0].lower() == "cipherstring":
+            value = " ".join(args[1:])
+        else:
+            continue
+        for token in re.split(r"[:,\s]+", value):
+            if not token or token[0] in "!-":
+                continue
+            if SECLEVEL0.search(token) or any(WEAK_OPENSSL_PART.fullmatch(p) for p in token.lstrip("+").split("+") if p):
                 n += 1
+    return n
+
+
+def _nginx_old_protocols(text):
+    n = 0
+    for name, args in _nginx_lines(text):
+        if _directive(name, "ssl_protocols"):
+            n += sum(1 for a in args if a.lower() in OLD_PROTOCOLS)
+    return n
+
+
+def _nginx_min_protocol(text):
+    """ssl_conf_command (or proxy_...) MinProtocol below TLS 1.2 or None, or Protocol enabling one."""
+    n = 0
+    for name, args in _nginx_lines(text):
+        if not _directive(name, "ssl_conf_command") or len(args) < 2:
+            continue
+        cmd, value = args[0].lower(), " ".join(args[1:]).lower()
+        if cmd == "minprotocol" and value in OLD_PROTOCOLS | {"none"}:
+            n += 1
+        elif cmd == "protocol":
+            n += sum(1 for p in re.split(r"[,\s]+", value) if p in OLD_PROTOCOLS | {"all"})
+    return n
+
+
+def _nginx_trust(text):
+    return {f"{name} {' '.join(args)}" for name, args in _nginx_lines(text)
+            if _directive(name, "ssl_trusted_certificate") or name in ("ssl_client_certificate", "ssl_crl")
+            or _directive(name, "ssl_crl")}
+
+
+def _go_int(s):
+    """A Go integer literal's value (0x, 0o, 0b, a leading 0 for octal, _ separators), or None."""
+    s = s.replace("_", "")
+    for pattern, base in ((r"0[xX][0-9a-fA-F]+", 16), (r"0[oO][0-7]+", 8), (r"0[bB][01]+", 2), (r"0[0-7]*", 8),
+                          (r"[1-9][0-9]*", 10)):
+        if re.fullmatch(pattern, s):
+            return int(s[2:] if s[1:2] in "xXoObB" and len(s) > 2 else s, base)
+    return None
+
+
+def _go_version_values(text):
+    """The value of every MinVersion or MaxVersion setting: a number, or None when the check cannot
+    read it (an expression, a variable, a rune)."""
+    out = []
+    for m in GO_VERSION_VALUE.finditer(text):
+        v = m[1].strip()
+        inner = re.fullmatch(r"uint16\s*\(\s*(.*?)\s*\)", v)
+        v = inner[1] if inner else v
+        named = re.fullmatch(r"(?:\w+\.)?(Version\w+)", v)
+        out.append(GO_VERSIONS.get(named[1]) if named else _go_int(v))
+    return out
+
+
+def _go_old_numbers(text):
+    return sum(1 for v in _go_version_values(text) if v is not None and v < TLS12)
+
+
+def _go_unread_versions(text):
+    return sum(1 for v in _go_version_values(text) if v is None)
+
+
+def _go_min_versions(text):
+    return [v for v in _go_version_values(text) if v is not None]
+
+
+def _go_unread_suites(text):
+    """Cipher suites the check cannot name: numbers or expressions in a []uint16 list, or a
+    CipherSuites value that is not a list written out."""
+    n = len(GO_SUITES_SET.findall(text))
+    for m in GO_SUITE_LIST.finditer(text):
+        n += sum(1 for e in m[1].split(",") if e.strip() and not GO_NAMED_SUITE.fullmatch(e.strip()))
     return n
 
 
@@ -61,69 +306,61 @@ def _old_godebug_default(text):
     return sum(1 for m in GODEBUG_DEFAULT.finditer(text) if int(m[1]) < GODEBUG_DEFAULT_MIN)
 
 
-def _nginx_trust(text):
-    return {f"{m[1]} {m[2].strip()}" for m in NGINX_TRUST.finditer(text)}
-
-
 def _go_trust(text):
-    return {f"{m[1]}: {m[2].strip()}" for m in GO_TRUST.finditer(text)}
-
-
-def _go_min_versions(text):
-    out = []
-    for m in GO_MIN_VERSION.finditer(text):
-        if m[1]:
-            if m[1] in GO_VERSIONS:
-                out.append(GO_VERSIONS[m[1]])
-        else:
-            out.append(int(m[2], 16) if m[2][:2].lower() == "0x" else int(m[2], 10))
-    return out
+    return {f"{m[1]}: {m[2].strip()}" for m in re.finditer(rf"\b(RootCAs|ClientCAs){GO_SET}([^,;\n}}]+)", text)}
 
 
 def _go_lines(text):
     return [int(m[1]) for m in GO_MOD_GO.finditer(text)]
 
 
+def _nginx(pattern):
+    """A whole nginx statement: name, then words separated by one space (see nginx_statements)."""
+    return re.compile("^" + pattern + "$", re.M)
+
+
+UP = r"(?:proxy_|grpc_|uwsgi_)"
 # (rule, file kind, mode, pattern). Patterns are regular expressions, or functions of the text that
 # return a count ("added", "removed"), a set of values ("changed") or a list of numbers ("lowered").
-# Patterns run on text with comments removed.
 RULES = [
     ("InsecureSkipVerify", GO, "added", r"\bInsecureSkipVerify\b"),
     ("VerifyPeerCertificate callback", GO, "added", r"\bVerifyPeerCertificate\b"),
     ("VerifyConnection callback", GO, "added", r"\bVerifyConnection\b"),
     ("client certificates no longer verified", GO, "added",
      r"\b(?:NoClientCert|RequestClientCert|RequireAnyClientCert|VerifyClientCertIfGiven)\b"),
-    ("TLS 1.0/1.1 or SSL 3.0 allowed", GO, "added", r"\btls\.Version(?:SSL30|TLS10|TLS11)\b"),
-    ("TLS version below 1.2 written as a number", GO, "added",
-     rf"\b(?:Min|Max)Version\s*[:=]\s*(?:uint16\s*\(\s*)?{LEGACY_NUMBER}\b"),
+    ("TLS 1.0/1.1 or SSL 3.0 allowed", GO, "added", r"\bVersion(?:SSL30|TLS10|TLS11)\b"),
+    ("TLS version below 1.2 written as a number", GO, "added", _go_old_numbers),
+    ("TLS version set to a value the check cannot read (an expression, a variable)", GO, "added", _go_unread_versions),
     ("MinVersion lowered", GO, "lowered", _go_min_versions),
-    ("MinVersion removed", GO, "removed", r"\bMinVersion\s*[:=]"),
+    ("MinVersion removed", GO, "removed", rf"\bMinVersion{GO_SET}"),
     ("weak cipher suite (3DES, RC4, NULL, EXPORT or RSA key exchange)", GO, "added",
-     r"\btls\.TLS_\w*(?:_3DES_|_RC4_|_NULL_|EXPORT)\w*|\btls\.TLS_RSA_WITH_\w+|\btls\.InsecureCipherSuites\b"),
-    ("RootCAs removed", GO, "removed", r"\bRootCAs\b"),
-    ("ClientCAs removed", GO, "removed", r"\bClientCAs\b"),
+     r"\bTLS_\w*(?:_3DES_|_RC4_|_NULL_|_DES_|EXPORT)\w*|\bTLS_RSA_WITH_\w+|\bInsecureCipherSuites\b"),
+    ("cipher suite the check cannot name (a number or an expression)", GO, "added", _go_unread_suites),
+    ("RootCAs removed", GO, "removed", rf"\bRootCAs{GO_SET}"),
+    ("ClientCAs removed", GO, "removed", rf"\bClientCAs{GO_SET}"),
     ("trusted CA pool changed", GO, "changed", _go_trust),
-    ("system CA pool added", GO, "added", r"\bx509\.SystemCertPool\b"),
+    ("system CA pool added", GO, "added", r"\bSystemCertPool\b"),
     ("RequireAndVerifyClientCert removed", GO, "removed", r"\bRequireAndVerifyClientCert\b"),
     ("go line lowered (older Go defaults include TLS 1.0 servers and RSA key exchange)", GOMOD, "lowered", _go_lines),
-    ("proxy_ssl_verify off", NGINX, "added", r"\bproxy_ssl_verify\s+off\s*;"),
-    ("proxy_ssl_verify on removed (nginx's default is off)", NGINX, "removed", r"\bproxy_ssl_verify\s+on\s*;"),
-    ("proxy_ssl_trusted_certificate removed", NGINX, "removed", r"\bproxy_ssl_trusted_certificate\s+\S"),
-    ("ssl_trusted_certificate removed", NGINX, "removed", r"(?<!proxy_)\bssl_trusted_certificate\s+\S"),
+    ("proxy_ssl_verify off", NGINX, "added", _nginx(rf"{UP}ssl_verify (?i:off);")),
+    ("proxy_ssl_verify on removed (nginx's default is off)", NGINX, "removed", _nginx(rf"{UP}ssl_verify (?i:on);")),
+    ("proxy_ssl_trusted_certificate removed", NGINX, "removed", _nginx(rf"{UP}ssl_trusted_certificate .+;")),
+    ("ssl_trusted_certificate removed", NGINX, "removed", _nginx(r"ssl_trusted_certificate .+;")),
     ("trusted CA file changed", NGINX, "changed", _nginx_trust),
-    ("ssl_verify_client off or optional_no_ca", NGINX, "added", r"\bssl_verify_client\s+(?:off|optional_no_ca)\s*;"),
-    ("ssl_verify_client on removed", NGINX, "removed", r"\bssl_verify_client\s+on\s*;"),
-    ("ssl_client_certificate removed", NGINX, "removed", r"\bssl_client_certificate\s+\S"),
-    ("TLS 1.0/1.1 or SSLv3 in a protocol list", NGINX, "added",
-     r"\b(?:ssl|proxy_ssl)_protocols\s[^;]*\b(?:SSLv[23]|TLSv1(?:\.1)?)(?![.\d])"),
-    ("TLS 1.0/1.1 or SSLv3 as MinProtocol", NGINX, "added",
-     r"\bssl_conf_command\s+MinProtocol\s+(?:SSLv3|TLSv1(?:\.1)?)(?![.\d])"),
+    ("ssl_verify_client off or optional_no_ca", NGINX, "added", _nginx(r"ssl_verify_client (?i:off|optional_no_ca);")),
+    ("ssl_verify_client on removed", NGINX, "removed", _nginx(r"ssl_verify_client (?i:on);")),
+    ("ssl_client_certificate removed", NGINX, "removed", _nginx(r"ssl_client_certificate .+;")),
+    ("TLS 1.0/1.1 or SSLv3 in a protocol list", NGINX, "added", _nginx_old_protocols),
+    ("TLS 1.0/1.1 or SSLv3 as MinProtocol", NGINX, "added", _nginx_min_protocol),
     ("weak cipher suite (3DES, RC4, NULL, EXPORT, RSA key exchange or security level 0)", NGINX, "added", _weak_ciphers),
     ("system CA bundle referenced", ANY, "added",
      r"/etc/(?:ssl|pki/tls)/certs(?:/[\w.-]+)?|\bca-(?:certificates|bundle)\.crt\b"),
     ("GODEBUG brings back legacy TLS (tls10server, tlsrsakex, tls3des, tlsunsafeekm, tlssha1, x509sha1)", ANY, "added",
      LEGACY_GODEBUG),
     (f"godebug default before Go 1.{GODEBUG_DEFAULT_MIN} (legacy TLS defaults)", ANY, "added", _old_godebug_default),
+    ("OpenSSL security level 0", ANY, "added", SECLEVEL0),
+    ("OpenSSL MinProtocol below TLS 1.2 (openssl.cnf)", ANY, "added",
+     r"(?i)\bMinProtocol\s*=\s*(?:SSLv3|TLSv1(?:\.1)?|None)(?![.\w])"),
     ("rejectUnauthorized: false", JS, "added", r"\brejectUnauthorized\s*:\s*false\b"),
     ("NODE_TLS_REJECT_UNAUTHORIZED=0", ANY, "added", r"\bNODE_TLS_REJECT_UNAUTHORIZED['\"\]]*\s*[:=]?\s*['\"]?0"),
     ("verify=False", PY, "added", r"\bverify\s*=\s*False\b"),
@@ -132,6 +369,7 @@ RULES = [
     ("unverified SSL context", PY, "added", r"\b_create_unverified_context\b"),
     ("curl --insecure or -k", ANY, "added", r"\bcurl\b[^\n]*\s(?:--insecure|-k)(?=\s|$)|(?:^|\s)--insecure(?=\s|$)"),
 ]
+RAW_TOO = (JS, PY)  # approximate scanners: "added" rules also count the raw text
 
 
 def kind_of(path):
@@ -140,7 +378,7 @@ def kind_of(path):
         return GO
     if name == "go.mod":
         return GOMOD
-    if name.endswith(".conf") or name == "nginx.conf":
+    if name.endswith((".conf", ".conf.template")) or name == "nginx.conf":
         return NGINX
     if name.endswith(".py"):
         return PY
@@ -149,21 +387,9 @@ def kind_of(path):
     return ANY
 
 
-def strip_comments(text, kind):
-    """Text without comments, so a setting cannot be disabled by commenting it out unnoticed.
-    Go's //go: directives are kept: //go:debug sets GODEBUG. Rough on purpose: quoted strings are
-    not parsed, which can only hide text on both sides alike."""
-    if kind in (GO, GOMOD, JS):
-        text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
-        return re.sub(r"(?<![:\"'])//(?!go:)[^\n]*", "", text)
-    if kind in (NGINX, PY, ANY):
-        return re.sub(r"#[^\n]*", "", text)
-    return text
-
-
 def _short(values, limit=3, width=80):
     shown = [v if len(v) <= width else v[:width] + "..." for v in sorted(values)[:limit]]
-    return "[" + ", ".join(shown) + (", ..." if len(values) > limit else "") + "]"
+    return "[" + ", ".join(shown).replace("\x00", " ") + (", ..." if len(values) > limit else "") + "]"
 
 
 def _shown(n, gomod):
@@ -172,20 +398,29 @@ def _shown(n, gomod):
     return {v: k for k, v in GO_VERSIONS.items()}.get(n, f"0x{n:04x}")
 
 
+def _count(pattern, text):
+    if callable(pattern):
+        return pattern(text)
+    if isinstance(pattern, re.Pattern):
+        return len(pattern.findall(text))
+    return len(re.findall(pattern, text, re.M))
+
+
 def weakening(changed):
     """Why a patch weakens TLS: ["path: rule (before ..., after ...)"], [] when it does not.
     changed is {path: (text before, text after)} as loop.apply_edits returns it."""
     out = []
     for path in sorted(changed):
         kind = kind_of(path)
-        before, after = (strip_comments(t, kind) for t in changed[path])
+        raw_before, raw_after = changed[path]
+        (before, bare_before), (after, bare_after) = views(raw_before, kind), views(raw_after, kind)
         for name, rule_kind, mode, pattern in RULES:
             if rule_kind not in (kind, ANY):
                 continue
-            if callable(pattern):
-                b, a = pattern(before), pattern(after)
+            if mode == "removed":
+                b, a = _count(pattern, bare_before), _count(pattern, bare_after)
             else:
-                b, a = len(re.findall(pattern, before, re.M)), len(re.findall(pattern, after, re.M))
+                b, a = _count(pattern, before), _count(pattern, after)
             if mode == "changed":
                 if a - b:
                     out.append(f"{path}: {name} (before {_short(b)}, after {_short(a)})")
@@ -194,4 +429,8 @@ def weakening(changed):
                     out.append(f"{path}: {name} (before {_shown(min(b), kind == GOMOD)}, after {_shown(min(a), kind == GOMOD)})")
             elif (mode == "added" and a > b) or (mode == "removed" and a < b):
                 out.append(f"{path}: {name} (before {b}, after {a})")
+            elif mode == "added" and kind in RAW_TOO:
+                rb, ra = _count(pattern, raw_before), _count(pattern, raw_after)
+                if ra > rb:
+                    out.append(f"{path}: {name} (before {rb}, after {ra}, comments included)")
     return out
