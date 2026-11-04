@@ -74,7 +74,7 @@ Measured on an M-series Mac with msb 0.7.13 (November 4, 2026), 75 s in all:
 
 Every `make`, `go` and `nginx` command ran inside `msb exec` (0 on the host), the planted test hook's `CANARY-0001` landed in the sinkhole during `make test`, every microVM was removed, and the CBOM after the patch has no row that blocks hybrid key exchange (the RS256 JWT row stays: signatures are out of scope). The same probe binary built twice gave the same SHA-256.
 
-On the VX1 host (x86_64) the same scripted run passed in 120.5 s. With `--model glm-5.3` writing the plan and the edits it passed twice, in 97.3 s and 116.1 s, for $0.0217 and $0.0197 in tokens ([docs/kickoff-spike.md](docs/kickoff-spike.md)).
+On the VX1 host (x86_64) the same scripted run passed in 120.5 s. With `--model glm-5.3` writing the plan and the edits, every run that reached the model on November 4 and 5 passed: 97.3 s, 116.1 s, 106.7 s and 130.1 s, for $0.0217, $0.0197, $0.0138 and $0.0155 in tokens ([docs/kickoff-spike.md](docs/kickoff-spike.md) has the first two). The last one also wrote a hashed receipt (41 artifacts, 320 KB) that `verify-receipt` accepted on the VX1 host and again on a Mac.
 
 ```sh
 python3 e2e/orders_edge.py --repo ../orders-edge --approve   # exit code 0 only if every check passes
@@ -103,7 +103,7 @@ Egress is recorded per microVM: the sinkhole's window is collected after each st
 python3 -m pqproof verify-receipt runs/e2e/receipt   # exit code 0 only if every check passes
 ```
 
-It validates `receipt.json` against the schema, recomputes `receipt_id`, the byte count and SHA-256 of every artifact (read without following symlinks), refuses a file that is not in the manifest and a reference whose hash differs from the manifest, compares the CBOM rows with their files, and renders `receipt.html` again to compare it with the file. The e2e run does the same before it reports success. This is a hashed receipt, not a statement of who made it: anyone can edit a file and write new hashes, so a `receipt_id` means something only next to one from a source you trust, such as the run's own output. On a Mac (msb 0.7.13, November 5, 2026) the scripted run's receipt had 47 artifacts in 328 KB and passed all 53 checks.
+It validates `receipt.json` against the schema, recomputes `receipt_id`, the byte count and SHA-256 of every artifact (read without following symlinks), refuses a file that is not in the manifest and a reference whose hash differs from the manifest, compares the CBOM rows with their files, and renders `receipt.html` again to compare it with the file. The e2e run does the same before it reports success. Because `receipt.html` is compared with what the running version of PQ-Proof renders, check a receipt with the version that wrote it. This is a hashed receipt, not a statement of who made it: anyone can edit a file and write new hashes, so a `receipt_id` means something only next to one from a source you trust, such as the run's own output. On a Mac (msb 0.7.13, November 5, 2026) the scripted run's receipt had 47 artifacts in 328 KB and passed all 53 checks.
 
 ## Web UI
 
