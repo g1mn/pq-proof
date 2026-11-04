@@ -283,10 +283,31 @@ class Pipeline:
 HOST_BUILD_PROGRAMS = {"make", "go", "nginx", "docker", "podman", "buildah", "tls_probe", "cc", "gcc"}
 
 
+# Programs that run another program given in their arguments, and interpreters that run code
+# given as an argument (sh -c "make test"). Either one in front of a build program still counts.
+HOST_WRAPPERS = {"env", "xcrun", "nice", "timeout", "sudo", "doas", "nohup", "time", "command", "exec", "stdbuf",
+                 "ionice", "caffeinate", "arch", "xargs", "script"}
+HOST_INTERPRETER = re.compile(r"(?:sh|bash|dash|zsh|ksh|fish|python[0-9.]*|perl|ruby|node)")
+BUILD_WORD = re.compile(r"(?<![\w.-])(?:[\w.-]*/)*(?:" + "|".join(sorted(HOST_BUILD_PROGRAMS)) + r")(?![\w.-])")
+
+
+def _runs_build(argv):
+    prog = os.path.basename(argv[0]) if argv else ""
+    if prog in HOST_BUILD_PROGRAMS:
+        return True
+    if prog in HOST_WRAPPERS:  # fail closed: any argument that names a build program
+        return any(os.path.basename(a) in HOST_BUILD_PROGRAMS or _runs_build(argv[i + 1:])
+                   for i, a in enumerate(argv[1:]) if os.path.basename(a) in HOST_WRAPPERS | HOST_BUILD_PROGRAMS
+                   or HOST_INTERPRETER.fullmatch(os.path.basename(a)))
+    if HOST_INTERPRETER.fullmatch(prog):
+        return any(BUILD_WORD.search(a) for a in argv[1:])
+    return False
+
+
 def host_build_count(host_argvs, msb="msb"):
-    """How many host command lines ran a build or server program outside msb (must be 0)."""
-    return sum(1 for argv in host_argvs if os.path.basename(argv[0]) != os.path.basename(msb)
-               and os.path.basename(argv[0]) in HOST_BUILD_PROGRAMS)
+    """How many host command lines ran a build or server program outside msb (must be 0), directly
+    or through a wrapper (env go build, sh -c "make test", python3 -c "os.system('go build')")."""
+    return sum(1 for argv in host_argvs if argv and os.path.basename(argv[0]) != os.path.basename(msb) and _runs_build(argv))
 
 
 def guest_commands(host_argvs, msb="msb"):

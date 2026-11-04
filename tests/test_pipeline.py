@@ -485,6 +485,20 @@ class Audit(unittest.TestCase):
         self.assertEqual(host_build_count(host + [["go", "build", "./..."], ["/usr/bin/make", "test"]]), 2)
         self.assertEqual(guest_commands(host), [["make", "test"], ["go", "build", "./..."], ["nginx", "-c", "/a"]])
 
+    def test_wrapped_host_builds_are_counted(self):
+        # review day 2: only argv[0] was looked at, so a wrapper hid the build
+        for argv in (["sh", "-c", "make test"], ["/usr/bin/env", "go", "build", "./..."], ["xcrun", "make"],
+                     ["python3", "-c", "import os; os.system('go build')"], ["bash", "-lc", "nginx -t"],
+                     ["env", "-i", "GOFLAGS=-mod=vendor", "/usr/local/go/bin/go", "test"], ["nice", "-n", "5", "make"],
+                     ["timeout", "60", "docker", "build", "."], ["sudo", "-u", "x", "gcc", "a.c"], ["zsh", "-c", "cd x && make"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(host_build_count([argv]), 1)
+        for argv in (["git", "clone", "-q", "/Users/x/go/src/orders-edge", "/tmp/s"], ["git", "-C", "/tmp/s", "rev-parse", "HEAD"],
+                     ["msb", "exec", "--no-stdin", "n", "--", "sh", "-c", "make test"], ["sh", "-c", "echo gopher; ls"],
+                     ["env", "LANG=C", "git", "status"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(host_build_count([argv]), 0)
+
 
 @unittest.skipUnless(os.environ.get("PQPROOF_E2E_REPO"), "set PQPROOF_E2E_REPO to an orders-edge checkout")
 class EndToEnd(unittest.TestCase):
