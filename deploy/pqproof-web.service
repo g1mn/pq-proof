@@ -1,0 +1,50 @@
+# The public demo's run viewer (replay of recorded runs only). Installed by deploy/demo-site.sh.
+# It runs as pqweb, a user with no key, no kvm group and no access to /etc/pqproof or the control
+# plane's runs; it reads only the published receipts under /srv/pqproof/runs, binds 127.0.0.1 behind
+# nginx, and may reach no address but localhost.
+[Unit]
+Description=PQ-Proof run viewer (recorded runs, replay)
+After=network.target
+
+[Service]
+User=pqweb
+Group=pqweb
+WorkingDirectory=/opt/pqproof/pq-proof/current
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m pqproof web --runs /srv/pqproof/runs --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=2
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+InaccessiblePaths=/etc/pqproof /var/lib/pqproof /root
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+MemoryMax=512M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target
