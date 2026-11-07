@@ -2,18 +2,54 @@
 
 Give PQ-Proof a repository URL. An agent inventories the repo's cryptography, patches its TLS key exchange to hybrid ML-KEM (`X25519MLKEM768`), and proves the change inside isolated microVMs on Vultr: a real handshake, the repo's own tests, and a classical client that still connects. You get a hashed receipt and a diff.
 
-> **Status:** under construction for the Vultr Agent Rush hackathon (November 2026). Parts marked *planned* are not in this repository yet.
+**Live demo: https://149-28-14-122.sslip.io/** replays a recorded run: `glm-5.3` on Vultr Serverless Inference wrote the plan and the patch, and microVMs on a Vultr VX1 host built and proved it (100.2 s, $0.0144 in tokens, verdict PASS). The page re-checks the run's hashed receipt on every request. Nothing on the demo site starts a run or calls a model.
 
-## Architecture (draft)
+Built for the Vultr Agent Rush hackathon (November 2026), challenge 1, Blast Radius Zero.
 
-The control plane is one Python (3.12+) process that sticks to the standard library where it can. It drives [Microsandbox](https://github.com/superradcompany/microsandbox) through the `msb` CLI from the official installer, so every action that touches a sandbox is a plain command line that is logged and can go into the receipt. Model calls go to Vultr Serverless Inference's OpenAI-compatible `/v1/chat/completions` endpoint over `urllib`; the agent needs no SDK, and the API key never leaves the control plane. Repo snapshots and receipts go to Vultr Object Storage through `boto3`, the standard S3 client (*planned*). The web UI is a static HTML page with plain JavaScript and CSS, served by the same process from the standard library's `http.server`, with no build step and nothing loaded from another site (see Web UI). We chose Python because Microsandbox's docs and Vultr's sandboxing guide both use it, Ubuntu 24.04 on the VX1 host ships Python 3.12, and this is a one-person, 4.5-day build.
+## Architecture
+
+The control plane is one Python (3.12+) process that sticks to the standard library where it can. It drives [Microsandbox](https://github.com/superradcompany/microsandbox) through the `msb` CLI from the official installer, so every action that touches a sandbox is a plain command line that is logged and can go into the receipt. Model calls go to Vultr Serverless Inference's OpenAI-compatible `/v1/chat/completions` endpoint over `urllib`; the agent needs no SDK, and the API key never leaves the control plane. Receipts are written to the VX1 host's disk. The web UI is a static HTML page with plain JavaScript and CSS, served from the standard library's `http.server`, with no build step and nothing loaded from another site (see Web UI). We chose Python because Microsandbox's docs and Vultr's sandboxing guide both use it, Ubuntu 24.04 on the VX1 host ships Python 3.12, and this is a one-person, 4.5-day build.
 
 ```
-browser --HTTPS--> control plane (Python, Vultr VX1)
+                 Vultr VX1 host (Seattle)
+operator --SSH-->  control plane (Python, user pqproof)
                      |- Vultr Serverless Inference   plan, patch, tool calls (key stays here)
-                     |- Vultr Object Storage         snapshot in, receipt out (planned)
-                     '- msb create / exec / rm  -->  one microVM per step
+                     |- msb create / exec / rm  -->  one microVM per step (KVM, egress denied)
+                     '- writes run/receipt/
+                                 | published (root-owned copy)
+browser --HTTPS--> nginx --> run viewer (Python, user pqweb): replay of published receipts
 ```
+
+## How PQ-Proof uses Vultr
+
+| Role | Vultr service | What it does | Configuration |
+|---|---|---|---|
+| Control plane, sandbox host, demo site | **Vultr Cloud Compute VX1** | Runs the agent's control plane, one Microsandbox microVM per step on its KVM, the egress sinkhole and DNS recorder, and the public demo site (nginx + the run viewer) | Plan `vx1-g-4c-16g-240s` (4 vCPU, 16 GB, 240 GB), region Seattle (`sea`), Ubuntu 24.04 LTS x64, `/dev/kvm` available |
+| The agent's model | **Vultr Serverless Inference** (`https://api.vultrinference.com/v1`, OpenAI-compatible) | Writes the migration plan through the `propose_plan` tool and the edits through `propose_edits`, reads raw build errors and tries again (up to 3 attempts) | `glm-5.3` only, tools without `tool_choice`, `reasoning_effort: low`, at most 8 requests per run; the key lives in `/etc/pqproof/inference.env` (root, 600) and reaches the control plane on stdin |
+
+The demo run (`e2e-glm-6`, November 5, 2026, 01:10 KST) sent 3 requests to `glm-5.3`, and its receipt prices their tokens at the public model list's rates ($0.75 and $3.00 per million input and output tokens) at $0.0144. Every run that reached the model passed, at $0.0138 to $0.0217 each (see End-to-end run). Success is never the model's call: the verdict comes from the probe's handshakes and exit codes.
+
+## Public demo and deployment
+
+The demo site is read-only: it serves the published receipt of a recorded run and a replay built from that receipt alone. Live runs are not open to the public; the viewer's gate refuses them (`503`, "live runs are off"), and nginx answers anything but `GET` and `HEAD` with `403`.
+
+- **Viewer**: `deploy/pqproof-web.service` runs `python3 -m pqproof web` as `pqweb`, a system user with no shell, no key and no `kvm` group, bound to `127.0.0.1:8080`. systemd keeps `/etc/pqproof`, `/var/lib/pqproof` (the control plane's runs) and `/root` out of its view, lets it reach no address but localhost, and drops every capability (`systemd-analyze security`: 1.1, "OK"). It reads only `/srv/pqproof/runs`, a root-owned copy of the runs chosen for publication, each checked with `verify-receipt` before it is published.
+- **Front**: `deploy/nginx-demo.conf`, Ubuntu's nginx 1.24 with a Let's Encrypt certificate (http-01, renewed by certbot's timer), TLS 1.2 and 1.3, HSTS, per-address limits (10 requests per second with a burst of 40, 20 connections), 10 s header and body timeouts, 1 KB bodies. A request for any other host name gets no answer. The front itself speaks classical TLS: Ubuntu 24.04's OpenSSL 3.0 has no ML-KEM, and PQ-Proof proves hybrid handshakes inside the microVMs, not on its own front.
+- **Firewall**: ufw allows 22, 80 and 443/tcp only.
+
+To deploy it yourself on a VX1 instance with Ubuntu 24.04 (keys and secrets stay out of the repository):
+
+```sh
+deploy/upload.sh -i ~/.ssh/KEY --fixture ../orders-edge --key ~/.config/pqproof/inference.env root@HOST
+ssh root@HOST bash /opt/pqproof/pq-proof/current/deploy/vx1-setup.sh     # updates, keys-only sshd, ufw, user pqproof, msb 0.7.13
+ssh root@HOST 'cd /opt/pqproof/pq-proof/current && runuser -u pqproof -- env -i HOME=/var/lib/pqproof \
+    PATH=/var/lib/pqproof/.microsandbox/bin:/usr/bin:/bin python3 e2e/orders_edge.py \
+    --repo /opt/pqproof/orders-edge/current --approve --model glm-5.3 --key-file /dev/stdin \
+    --out /var/lib/pqproof/runs/RUN_ID < /etc/pqproof/inference.env'   # one real run, about 2 minutes
+ssh root@HOST bash /opt/pqproof/pq-proof/current/deploy/demo-site.sh DOMAIN RUN_ID   # viewer, nginx, certificate, ufw 80/443
+```
+
+`upload.sh` streams each repository's committed `HEAD` with `git archive` over SSH (no Git credentials go to the host) and copies the inference key file with `scp`. `demo-site.sh` can run again; it changes nothing that is already in place. The demo uses `149-28-14-122.sslip.io`, a name that resolves to the host's address.
 
 ## Model
 
@@ -53,7 +89,7 @@ Integration tests (`tests/test_sandbox.py`, `tests/test_egress.py`) run real mic
 
 ## End-to-end run on orders-edge
 
-`e2e/orders_edge.py` runs the whole pipeline on orders-edge (a separate fixture repository, not public yet), a small nginx + Go fixture with a classical-only TLS key exchange, a planted test hook and a prompt-injection line (`pqproof/pipeline.py` does the work):
+`e2e/orders_edge.py` runs the whole pipeline on orders-edge ([g1mn/orders-edge](https://github.com/g1mn/orders-edge), a separate fixture repository), a small nginx + Go fixture with a classical-only TLS key exchange, a planted test hook and a prompt-injection line (`pqproof/pipeline.py` does the work):
 
 1. Snapshot with `git clone --no-recurse-submodules` (the only non-`msb` commands on the host are `git clone`, `git rev-parse` and `git remote get-url`), and the CBOM.
 2. The plan's image tags are resolved to `name:tag@sha256:<digest>` and shown for approval.
@@ -111,16 +147,17 @@ It validates `receipt.json` against the schema, recomputes `receipt_id`, the byt
 python3 -m pqproof web --runs runs/   # http://127.0.0.1:8080/ ; each run directory is an e2e --out
 ```
 
-`pqproof/web.py` serves one page (`pqproof/static/`: HTML, CSS and plain JavaScript, no build step) and a small JSON API over the run directories under `--runs`; it never runs anything itself. For the chosen run the page shows the verdict, a job timeline (control-plane phases and every microVM, placed by time, with failed steps marked), the containment panel (each canary that reached the sinkhole with the bytes it sent, patches refused for weakening TLS, how many egress attempts reached the sinkhole, `not counted` for what the policy dropped, host build commands, microVMs destroyed, and each microVM's network flags), the CBOM before and after side by side, the proofs, the attempts and the diff that passed, and the receipt with its links. Every request for a run re-checks its receipt with the same code as `verify-receipt` (the result is kept until a file in that receipt directory changes), and the page says whether all hashes matched.
+`pqproof/web.py` serves one page (`pqproof/static/`: HTML, CSS and plain JavaScript, no build step) and a small JSON API over the run directories under `--runs`; it never runs anything itself. For the chosen run the page shows the verdict, a replay of the run (the job timeline of control-plane phases and every microVM fills in as the recorded clock advances, sped up to about 25 s, next to the receipt's events in time order: each microVM created and destroyed with its image and limits, each canary that reached the sinkhole, each patch refused for weakening TLS, each proof with its expected and actual result, the verdict; built from the receipt alone, so opening it starts nothing, calls no model and needs no network), the containment panel (each canary that reached the sinkhole with the bytes it sent, patches refused for weakening TLS, how many egress attempts reached the sinkhole, `not counted` for what the policy dropped, host build commands, microVMs destroyed, and each microVM's network flags), the CBOM before and after side by side, the proofs, the attempts and the diff that passed, and the receipt with its links. Every request for a run re-checks its receipt with the same code as `verify-receipt` (the result is kept until a file in that receipt directory changes), and the page says whether all hashes matched.
 
 | Request | Answer |
 |---|---|
 | `GET /api/runs` | runs that have a receipt, newest first |
 | `GET /api/runs/ID` | the run's `receipt.json`, the verification result, links |
+| `GET /api/runs/ID/replay` | the run's recorded events in time order, from its receipt |
 | `GET /runs/ID/receipt/PATH` | `receipt.html`, `receipt.json` or a file under `artifacts/` |
 | `POST /api/runs` `{"repo": "..."}` | a live run, if the gate admits it |
 
-Live runs go through a gate: `web.Gate.admit(repo, ip)` admits or refuses with a status and a reason, and an admitted run goes to a starter that releases the gate when the run ends. This is where the public demo's limits plug in (only allowlisted fixtures, one run at a time, a daily count per IP, a daily inference budget). In this build the gate refuses every request (`503`, "live runs are off") and there is no starter, so the page shows recorded runs only. Receipt text reaches the page only as text (no `innerHTML`); paths are checked segment by segment and read without following symlinks, so nothing outside a run's `receipt/` directory is served; every response carries a Content-Security-Policy (the page: same origin only; artifacts: `sandbox`) and `nosniff`. The server binds `127.0.0.1` unless told otherwise. Slow clients cannot hold it: it serves at most 64 connections at once and answers the next with `503` at once, drops a client that has not sent its whole request within 10 s, ends every connection after 30 s, and escapes control characters in its log lines. Limits per client (connections and requests per IP) belong to the front end that faces the internet (*planned* with the demo site).
+Live runs go through a gate: `web.Gate.admit(repo, ip)` admits or refuses with a status and a reason, and an admitted run goes to a starter that releases the gate when the run ends. Limits for public live runs would plug in there (only allowlisted fixtures, one run at a time, a daily count per address, a daily inference budget). In this build the gate refuses every request (`503`, "live runs are off") and there is no starter, so the page shows recorded runs only. Receipt text reaches the page only as text (no `innerHTML`); paths are checked segment by segment and read without following symlinks, so nothing outside a run's `receipt/` directory is served; every response carries a Content-Security-Policy (the page: same origin only; artifacts: `sandbox`) and `nosniff`. The server binds `127.0.0.1` unless told otherwise. Slow clients cannot hold it: it serves at most 64 connections at once and answers the next with `503` at once, drops a client that has not sent its whole request within 10 s, ends every connection after 30 s, and escapes control characters in its log lines. Limits per client (connections and requests per address) belong to the front that faces the internet: the demo site's nginx (see Public demo and deployment).
 
 ## Known limits
 
@@ -130,6 +167,9 @@ Live runs go through a gate: `web.Gate.admit(repo, ip)` admits or refuses with a
 - **The probe trusts the guest kernel.** Code that gained root inside a microVM through a kernel bug could forge a handshake (see Proof).
 - **Egress that Microsandbox's policy drops is not counted.** Only attempts that reach the sinkhole are recorded (see Containment); receipts say `"dropped_by_policy": "not counted"`.
 - **A receipt is hashed, not attributed.** Its hashes show that the files are the ones it names, not who produced them (see Hashed receipt).
+- **The public demo replays recorded runs; it does not run new ones.** Visitors cannot start a run, so the demo cannot be made to build arbitrary code or spend inference budget. Runs are started by the operator over SSH (see Public demo and deployment).
+- **The demo site's own front speaks classical TLS.** Ubuntu 24.04's OpenSSL 3.0 has no ML-KEM; the hybrid handshakes PQ-Proof proves happen inside the microVMs, between the probe and the patched servers.
+- **Auto-fix covers TLS key exchange in nginx and Go.** Signatures (RSA or ECDSA JWTs, certificates) are reported in the CBOM, not migrated.
 
 ## Development
 

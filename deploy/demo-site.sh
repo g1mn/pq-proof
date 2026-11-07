@@ -53,7 +53,7 @@ install -m 644 "$HERE/pqproof-web.service" /etc/systemd/system/pqproof-web.servi
 systemctl daemon-reload
 systemctl enable -q pqproof-web
 systemctl restart pqproof-web
-for _ in $(seq 50); do curl -fsS -o /dev/null http://127.0.0.1:8080/api/runs && break; sleep 0.2; done
+for _ in $(seq 50); do curl -fs -o /dev/null http://127.0.0.1:8080/api/runs && break; sleep 0.2; done
 curl -fsS http://127.0.0.1:8080/api/runs | python3 -c 'import json,sys; d=json.load(sys.stdin); print("runs:", [(r["id"], r["verdict"], r["verified"]) for r in d["runs"]], "live:", d["live_runs"])'
 
 say "nginx: $DOMAIN"
