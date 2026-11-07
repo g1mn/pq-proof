@@ -4,7 +4,7 @@ Give PQ-Proof a repository URL. An agent inventories the repo's cryptography, pa
 
 **Live demo: https://149-28-14-122.sslip.io/** replays recorded runs. In the newest, `e2e-glm-7`, `glm-5.3` on Vultr Serverless Inference wrote the plan and the patch, and microVMs on a Vultr VX1 host built and proved it (78.2 s, $0.0159 in tokens, verdict PASS). `e2e-injection-scripted-1` shows the TLS-weakening check refusing a patch that follows the fixture README's prompt injection (a scripted stand-in, no model call). The page re-checks each run's hashed receipt on every request. Nothing on the demo site starts a run or calls a model.
 
-Built for the Vultr Agent Rush hackathon (November 2026), challenge 1, Blast Radius Zero.
+Built for the Vultr Agent Rush hackathon (November 2026), challenge 1, Blast Radius Zero. Demo video (4:52): [PQ-Proof-demo.mp4](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-demo.mp4) · slides: [PQ-Proof-slides.pdf](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-slides.pdf) · fixture repository: [g1mn/orders-edge](https://github.com/g1mn/orders-edge) · team: g1mn, solo builder.
 
 ## Architecture
 
