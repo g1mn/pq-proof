@@ -10,7 +10,7 @@
 #   deploy/pqproof-web.service on 127.0.0.1:8080; nothing on this site starts a run or calls a model
 # - nginx and certbot from Ubuntu: a Let's Encrypt certificate for DOMAIN (http-01, webroot, no
 #   e-mail sent), renewed by certbot's timer with an nginx reload; deploy/nginx-demo.conf in front
-# - ufw: 80/tcp and 443/tcp open (22/tcp stays)
+# - ufw: 80/tcp and 443/tcp open (22/tcp stays), at most 100 connections at once per IPv4 address to them
 set -euo pipefail
 
 DOMAIN=${1:?usage: demo-site.sh DOMAIN RUN_ID...}
@@ -70,9 +70,16 @@ put_conf() {  # put_conf full|http
 }
 cert=/etc/letsencrypt/live/$DOMAIN/fullchain.pem
 
-say "ufw: 80/tcp 443/tcp"
+say "ufw: 80/tcp 443/tcp, at most 100 connections at once per IPv4 address"
 ufw allow 80/tcp >/dev/null
 ufw allow 443/tcp >/dev/null
+# nginx's limit_conn counts requests, not connections that have not sent a whole request yet, so one address could
+# otherwise hold every worker connection; the kernel caps them per address instead (IPv6 serves no demo name)
+if ! grep -q pqproof-connlimit /etc/ufw/before.rules; then
+  sed -i '/^# End required lines/a -A ufw-before-input -p tcp -m multiport --dports 80,443 -m connlimit --connlimit-above 100 --connlimit-mask 32 -m comment --comment pqproof-connlimit -j REJECT --reject-with tcp-reset' /etc/ufw/before.rules
+  ufw reload >/dev/null || die "ufw reload failed after adding the connection cap to /etc/ufw/before.rules"
+fi
+iptables -S ufw-before-input | grep -q pqproof-connlimit || die "the per-address connection cap is not in effect"
 
 if [ ! -f "$cert" ]; then
   put_conf http
