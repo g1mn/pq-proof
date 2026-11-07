@@ -39,7 +39,7 @@
     if (!rows.length) tb.append(el("tr", null, el("td", { colspan: String(head.length), class: "muted" }, "none")));
     return el("div", { class: "wrap" }, el("table", { class: wide ? "wide" : null }, el("thead", null, el("tr", null, head.map((h) => el("th", null, h)))), tb));
   }
-  function fill(id, ...nodes) { const n = $(id); n.replaceChildren(...nodes.flat()); }
+  function fill(id, ...nodes) { $(id).replaceChildren(...nodes.flat().filter((c) => c !== null && c !== undefined && c !== false)); }
 
   async function getJSON(url) {
     const r = await fetch(url, { headers: { Accept: "application/json" } });
