@@ -151,6 +151,8 @@ def main():
     ap.add_argument("--approve", action="store_true", help="approve the plan without asking")
     ap.add_argument("--model", default="scripted",
                     help="'scripted' (default: fixed edits, no inference call) or a Vultr Serverless Inference model id")
+    ap.add_argument("--model-file", default=str(MODEL_FILE),
+                    help="with --model scripted: the stand-in's plan and edits (default e2e/orders-edge-scripted-model.json)")
     ap.add_argument("--key-file", help="env file with VULTR_INFERENCE_API_KEY=... (/dev/stdin works); "
                                        "default: the VULTR_INFERENCE_API_KEY environment variable")
     args = ap.parse_args()
@@ -160,9 +162,10 @@ def main():
     rec = Recorder()
     phases = Phases()
     scripted = args.model == "scripted"
-    model_doc = json.loads(MODEL_FILE.read_text())
+    model_file = pathlib.Path(args.model_file)
+    model_doc = json.loads(model_file.read_text())
     if scripted:
-        report = {"started_at": time.time(), "model": {"kind": "scripted", "note": model_doc["note"], "file": MODEL_FILE.name}}
+        report = {"started_at": time.time(), "model": {"kind": "scripted", "note": model_doc["note"], "file": model_file.name}}
     else:
         try:
             client = Client(api_key=key_from_file(args.key_file) if args.key_file else None)
