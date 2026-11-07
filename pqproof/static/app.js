@@ -73,19 +73,24 @@
           el("span", { class: v.ok ? "ok" : "bad" }, v.ok ? `all ${v.checks} checks match` : `${v.failed.length} of ${v.checks} checks failed`))));
   }
 
-  function timeline(r) {
+  // job timeline: one bar per phase and per microVM; with now (seconds after the start) bars stop there
+  function timeline(r, now) {
     const spans = r.timeline.map((p) => ({ label: p.name, a: p.started_at, b: p.ended_at, kind: "phase" }))
       .concat(r.sandboxes.map((s) => ({ label: s.step, a: s.started_at, b: s.destroyed_at || r.finished_at, kind: "vm", id: s.id,
         failed: s.execs.some((e) => e.exit_code !== 0 && !/^tls_probe$/.test(e.argv[0])) })));
     const t0 = Math.min(...spans.map((s) => t(s.a)));
     const t1 = Math.max(...spans.map((s) => t(s.b)), t0 + 1);
-    const row = (s) => el("div", { class: "tl-row" },
-      el("div", { class: "tl-label", title: s.id || "" }, s.label, s.failed ? el("span", { class: "bad" }, " (failed)") : null),
-      el("div", { class: "tl-track" }, el("div", {
-        class: "tl-bar" + (s.kind === "vm" ? " vm" : "") + (s.failed ? " failed" : ""),
-        style: { left: ((t(s.a) - t0) / (t1 - t0) * 100).toFixed(2) + "%", width: Math.max((t(s.b) - t(s.a)) / (t1 - t0) * 100, 0.3).toFixed(2) + "%" },
-      })),
-      el("div", { class: "tl-dur" }, secs(s.a, s.b)));
+    const cut = now === undefined ? t1 : t0 + now * 1000;
+    const row = (s) => {
+      const end = Math.min(t(s.b), cut), shown = t(s.a) <= cut, done = t(s.b) <= cut;
+      return el("div", { class: "tl-row" + (shown ? "" : " pending") },
+        el("div", { class: "tl-label", title: s.id || "" }, s.label, s.failed && done ? el("span", { class: "bad" }, " (failed)") : null),
+        el("div", { class: "tl-track" }, shown ? el("div", {
+          class: "tl-bar" + (s.kind === "vm" ? " vm" : "") + (s.failed && done ? " failed" : "") + (done ? "" : " running"),
+          style: { left: ((t(s.a) - t0) / (t1 - t0) * 100).toFixed(2) + "%", width: Math.max((end - t(s.a)) / (t1 - t0) * 100, 0.3).toFixed(2) + "%" },
+        }) : null),
+        el("div", { class: "tl-dur" }, shown ? ((end - t(s.a)) / 1000).toFixed(1) + " s" : ""));
+    };
     fill("timeline",
       el("div", { class: "tl-group" }, "Control plane phases"), spans.filter((s) => s.kind === "phase").map(row),
       el("div", { class: "tl-group" }, "MicroVMs (one per step, each destroyed afterwards)"), spans.filter((s) => s.kind === "vm").map(row),
@@ -94,6 +99,51 @@
         el("span", null, el("i", { style: { background: "var(--vm)" } }), "microVM"),
         el("span", null, el("i", { class: "failed-swatch" }), "microVM where a build or check failed (striped, marked failed)"),
         el("span", null, `0 s = ${r.started_at}, total ${((t1 - t0) / 1000).toFixed(1)} s`)));
+  }
+
+  // replay: the recorded events (GET /api/runs/ID/replay, built from the receipt) played back faster
+  const player = { timer: null, now: 0, shown: 0, events: [], duration: 0, speed: 1, r: null };
+  const kindClass = { exfil: "ev-alarm", refused: "ev-alarm", "vm-failed": "ev-bad", verdict: "ev-verdict" };
+  function feedItem(e) {
+    const cls = kindClass[e.kind] || (e.kind === "proof" || e.kind === "attempt" ? (e.ok ? "ev-ok" : "ev-bad") : null);
+    return el("li", { class: cls }, el("span", { class: "ev-t nowrap" }, "+" + e.t.toFixed(1) + " s"), el("span", null, e.text));
+  }
+  function draw() {
+    const p = player, feed = $("rp-feed");
+    while (p.shown < p.events.length && p.events[p.shown].t <= p.now) feed.append(feedItem(p.events[p.shown++]));
+    timeline(p.r, p.now);
+    $("rp-clock").textContent = Math.min(p.now, p.duration).toFixed(1) + " s / " + p.duration.toFixed(1) + " s";
+    $("rp-bar").style.width = (p.duration ? Math.min(p.now / p.duration, 1) * 100 : 100).toFixed(1) + "%";
+    $("rp-play").textContent = p.timer ? "Pause" : p.now >= p.duration ? "Replay" : "Play";
+  }
+  function stop() { if (player.timer) { clearInterval(player.timer); player.timer = null; } }
+  function play() {
+    stop();
+    if (player.now >= player.duration) { player.now = 0; player.shown = 0; $("rp-feed").replaceChildren(); }
+    let last = performance.now();
+    player.timer = setInterval(() => {
+      const tick = performance.now();
+      player.now += (tick - last) / 1000 * player.speed;
+      last = tick;
+      if (player.now >= player.duration) { player.now = player.duration; stop(); }
+      draw();
+    }, 100);
+    draw();
+  }
+  function toEnd() { stop(); player.now = player.duration; draw(); }
+  $("rp-play").addEventListener("click", () => { if (player.timer) { stop(); draw(); } else play(); });
+  $("rp-restart").addEventListener("click", () => { player.now = player.duration; play(); });
+  $("rp-end").addEventListener("click", toEnd);
+
+  async function replay(d) {
+    stop();
+    const rp = await getJSON("/api/runs/" + encodeURIComponent(d.id) + "/replay");
+    Object.assign(player, { r: d.receipt, events: rp.events, duration: rp.duration_s, now: 0, shown: 0,
+      speed: Math.max(1, Math.round(rp.duration_s / 25)) });
+    $("rp-feed").replaceChildren();
+    $("rp-note").textContent = player.speed + "x speed; nothing runs again: these are the receipt's own times and results";
+    const still = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (still) toEnd(); else play();
   }
 
   function containment(r) {
@@ -185,6 +235,7 @@
       proofs(r, base); receiptPanel(d);
       await patch(r, base, d.verification.ok);
       $("status").hidden = true; $("view").hidden = false;
+      await replay(d).catch((e) => { $("rp-note").textContent = "Replay unavailable: " + e.message; });
     } catch (e) { $("status").hidden = false; $("view").hidden = true; $("status").textContent = "Could not load run " + id + ": " + e.message; }
   }
 

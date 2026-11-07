@@ -11,8 +11,12 @@ receipt.verify(), and the page says whether all hashes matched.
     GET  /                               the page (static/index.html, app.js, app.css)
     GET  /api/runs                       runs with a receipt, newest first
     GET  /api/runs/ID                    one run: its receipt.json and the verification result
+    GET  /api/runs/ID/replay             the run's recorded events in time order, for the replay
     GET  /runs/ID/receipt/PATH           receipt.html, receipt.json or a file under artifacts/
     POST /api/runs  {"repo": "..."}      ask for a live run: the gate decides
+
+The replay is built from the stored receipt alone: opening it starts nothing, calls no model and
+needs no network.
 
 Live runs go through a Gate. The public demo's limits (only allowlisted repositories, one run at a
 time, a daily count per IP, a daily inference budget; DESIGN 3-1, commit C20) plug in there, and a
@@ -37,6 +41,7 @@ import socket
 import stat
 import threading
 import time
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
@@ -176,6 +181,86 @@ def run_detail(runs, run_id, cache=None):
             "links": {"receipt_html": base + "receipt.html", "receipt_json": base + "receipt.json", "base": base}}
 
 
+def _seconds(iso):
+    return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
+
+
+def replay(r):
+    """The run's recorded events in time order, from its receipt alone: phases, each microVM's start
+    and end, every egress attempt that reached the sinkhole (canaries named), refused and passed patch
+    attempts, every proof, the verdict. t is seconds after started_at. Proofs and attempts carry no
+    time of their own: a proof is placed when its step's microVM was destroyed, an attempt at its
+    first microVM, a refused attempt (no microVM: refused before any build) right after the last
+    microVM before it."""
+    t0 = _seconds(r["started_at"])
+    at = lambda iso: round(max(_seconds(iso) - t0, 0.0), 3)  # noqa: E731
+    events = []
+
+    def add(t, kind, text, **extra):
+        events.append({"t": t, "kind": kind, "text": text, **extra})
+
+    for p in r.get("timeline") or []:
+        add(at(p["started_at"]), "phase", p["name"], until=at(p["ended_at"]))
+    vms = {}
+    for s in r.get("sandboxes") or []:
+        step, lim = s.get("step", "?"), s.get("limits") or {}
+        start, end = at(s["started_at"]), at(s.get("destroyed_at") or r["finished_at"])
+        vms.setdefault(step, (start, end))
+        image = str(s.get("image", "")).split("@")[0]
+        add(start, "vm", f"microVM for {step}: {image}, {lim.get('cpus')} vCPU, {lim.get('memory_mib')} MiB, "
+                         f"{lim.get('wall_clock_s')} s limit, created with --no-net", step=step, until=end)
+        for ev in (s.get("egress") or {}).get("reached_sinkhole") or []:
+            if ev.get("canaries"):
+                add(at(ev["at"]), "exfil", f"EXFIL CAUGHT: {', '.join(ev['canaries'])} sent to {ev.get('dest')} "
+                                           f"({ev.get('kind')}, {ev.get('bytes')} bytes) during {step}; it stopped at the sinkhole")
+            else:
+                add(at(ev["at"]), "egress", f"{step}: {ev.get('kind')} to {ev.get('dest')} reached the sinkhole (recorded)")
+        failed = [e for e in s.get("execs") or [] if e.get("exit_code") != 0 and (e.get("argv") or [""])[0] != "tls_probe"]
+        what = f"; {' '.join(failed[0]['argv'])} exited {failed[0]['exit_code']}" if failed else ""
+        add(end, "vm-failed" if failed else "vm-end",
+            f"microVM for {step} destroyed{what}" if s.get("destroyed_at") else f"microVM for {step} not destroyed{what}", step=step)
+    def attempt_vms(n):
+        return [v for step, v in vms.items() if step in (f"attempt {n} build", f"attempt {n} prove")]
+
+    def before(n):  # the end of the last microVM before attempt n (baseline included)
+        ends = [e for step, (_, e) in vms.items() if not step.startswith("attempt ")]
+        ends += [e for m in range(1, n) for _, e in attempt_vms(m)]
+        return max(ends, default=0.0)
+
+    for a in r.get("attempts") or []:
+        n = a.get("number") if isinstance(a.get("number"), int) else 0
+        own = attempt_vms(n)
+        if a.get("tls_weakening"):
+            add(before(n), "refused", f"Patch refused (attempt {n}) before any build: it weakens TLS: "
+                                      + "; ".join(a["tls_weakening"]))
+        elif own:
+            add(min(v[0] for v in own), "attempt-start", f"Attempt {n}: edits applied to a fresh copy, TLS-weakening check passed; build in a new microVM")
+            add(max(v[1] for v in own), "attempt", f"Attempt {n}: {a.get('outcome')}", ok=bool(a.get("ok")))
+        else:
+            add(before(n), "attempt", f"Attempt {n}: {a.get('outcome')}", ok=bool(a.get("ok")))
+    for p in r.get("proofs") or []:
+        step = p.get("step", "")
+        t = (vms.get(f"{step} prove") or vms.get(f"{step} build") or (0.0, at(r["finished_at"])))[1]
+        add(t, "proof", f"{step}: {p.get('name')}: expected {p.get('expected')}, got {p.get('actual')}", ok=bool(p.get("ok")))
+    verdict = str(r.get("verdict", "")).upper()
+    add(at(r["finished_at"]), "verdict", f"Verdict: {verdict}, from the probe's results and exit codes, never from a model")
+    # at one instant: a step's proofs, then its outcome, its microVM's end, the next phase, the next microVM
+    order = {"proof": 0, "attempt": 1, "vm-end": 2, "vm-failed": 2, "refused": 3, "phase": 4, "attempt-start": 5, "vm": 6,
+             "egress": 7, "exfil": 7, "verdict": 8}
+    events.sort(key=lambda e: (e["t"], order.get(e["kind"], 9)))
+    return {"started_at": r["started_at"], "duration_s": at(r["finished_at"]), "events": events}
+
+
+def run_replay(runs, run_id, cache=None):
+    r = load_receipt(runs, run_id)
+    results = cache.results(os.path.join(runs, run_id, "receipt")) if cache else receipt.verify(os.path.join(runs, run_id, "receipt"))
+    try:
+        out = replay(r)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise WebError(HTTPStatus.UNPROCESSABLE_ENTITY, "this receipt cannot be replayed") from None
+    return {"id": run_id, "verified": all(ok for ok, _ in results), **out}
+
+
 def receipt_file(runs, run_id, rel):
     """(bytes, content type, CSP) of a file in a run's receipt directory, or WebError 404."""
     parts = rel.split("/")
@@ -233,6 +318,9 @@ class Handler(BaseHTTPRequestHandler):
         m = re.fullmatch(r"/api/runs/([^/]+)", path)
         if m:
             return self.json(HTTPStatus.OK, run_detail(runs, unquote(m[1]), self.server.verified), head_only)
+        m = re.fullmatch(r"/api/runs/([^/]+)/replay", path)
+        if m:
+            return self.json(HTTPStatus.OK, run_replay(runs, unquote(m[1]), self.server.verified), head_only)
         m = re.fullmatch(r"/runs/([^/]+)/receipt/(.+)", path)
         if m:
             data, ctype, csp = receipt_file(runs, unquote(m[1]), unquote(m[2]))

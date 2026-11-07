@@ -25,8 +25,20 @@
   <div id="view" hidden>
     <section class="summary" id="summary"></section>
 
-    <h2>Job timeline</h2>
-    <section id="timeline"></section>
+    <h2>Replay of the recorded run</h2>
+    <section id="replay">
+      <div class="rp-controls">
+        <button id="rp-play" type="button">Pause</button>
+        <button id="rp-restart" type="button">Restart</button>
+        <button id="rp-end" type="button">Skip to end</button>
+        <span id="rp-clock" class="nowrap mono"></span>
+        <span id="rp-note" class="muted"></span>
+      </div>
+      <div class="rp-progress"><div id="rp-bar"></div></div>
+      <div id="timeline"></div>
+      <h3 class="feed-title">Events, in the order the receipt records them</h3>
+      <ol id="rp-feed" class="feed"></ol>
+    </section>
 
     <h2>Containment</h2>
     <section id="containment"></section>

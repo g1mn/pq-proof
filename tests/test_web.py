@@ -139,6 +139,77 @@ class Server(unittest.TestCase):
         self.assertEqual(status, HTTPStatus.SERVICE_UNAVAILABLE)
         self.assertIn("live runs are off", json.loads(data)["error"])
 
+    def test_replay_opens_from_the_receipt_alone_without_network_or_model(self):
+        # C20: no socket to anything but this test's own loopback server, and no inference client
+        real_connect = socket.socket.connect
+
+        def loopback_only(sock, address):
+            host = address[0] if isinstance(address, tuple) else address
+            if sock.family == socket.AF_UNIX or host in ("127.0.0.1", "::1"):
+                return real_connect(sock, address)
+            raise AssertionError(f"network connection to {address!r} during a replay")
+
+        def no_model(*a, **k):
+            raise AssertionError("an inference client was created during a replay")
+
+        real_getaddrinfo = socket.getaddrinfo
+
+        def loopback_names_only(host, *a, **k):
+            if host not in ("127.0.0.1", "::1"):
+                raise AssertionError(f"DNS lookup of {host!r} during a replay")
+            return real_getaddrinfo(host, *a, **k)
+
+        with mock.patch.object(socket.socket, "connect", loopback_only), \
+                mock.patch("socket.getaddrinfo", loopback_names_only), \
+                mock.patch("pqproof.inference.Client", side_effect=no_model), \
+                mock.patch("pqproof.inference.urllib_send", side_effect=no_model):
+            for path in ("/", "/app.js", "/app.css", "/api/runs"):
+                self.assertEqual(self.req("GET", path)[0], 200, path)
+            status, rp = self.get_json("/api/runs/e2e-1/replay")
+        self.assertEqual(status, 200)
+        self.assertTrue(rp["verified"])
+        kinds = [e["kind"] for e in rp["events"]]
+        self.assertEqual(kinds[-1], "verdict")
+        self.assertEqual([e["t"] for e in rp["events"]], sorted(e["t"] for e in rp["events"]))
+        exfil = [e for e in rp["events"] if e["kind"] == "exfil"]
+        self.assertTrue(exfil and all("EXFIL CAUGHT" in e["text"] and "CANARY" in e["text"] for e in exfil))
+        self.assertEqual(sum(k == "vm" for k in kinds), len(self.receipt["sandboxes"]))
+        self.assertEqual(sum(k in ("vm-end", "vm-failed") for k in kinds), len(self.receipt["sandboxes"]))
+        self.assertEqual(sum(k == "proof" for k in kinds), len(self.receipt["proofs"]))
+        refused = [i for i, e in enumerate(rp["events"]) if e["kind"] == "refused"]
+        self.assertEqual(len(refused), 1)  # the fixture's attempt 1 weakens TLS: refused before any build
+        self.assertIn("InsecureSkipVerify", rp["events"][refused[0]]["text"])
+        self.assertLess(refused[0], next(i for i, e in enumerate(rp["events"]) if e["kind"] == "attempt-start"))
+        self.assertEqual(rp["duration_s"], round((web._seconds(self.receipt["finished_at"]) - web._seconds(self.receipt["started_at"])), 3))
+        status, rp2 = self.get_json("/api/runs/e2e-2/replay")
+        self.assertEqual((status, rp2["verified"]), (200, False))  # a tampered copy replays, marked unverified
+        self.assertEqual(self.req("GET", "/api/runs/nope/replay")[0], 404)
+
+    def test_replay_order_of_one_run(self):
+        T = lambda s: f"2026-11-04T23:10:{s:06.3f}Z"  # noqa: E731
+        vm = lambda step, a, b, execs=(), egress=(): {  # noqa: E731
+            "step": step, "started_at": T(a), "destroyed_at": T(b), "image": "golang:1.27@sha256:" + "0" * 64,
+            "limits": {"cpus": 2, "memory_mib": 2048, "wall_clock_s": 300}, "execs": list(execs),
+            "egress": {"reached_sinkhole": list(egress)}}
+        r = {"started_at": T(0), "finished_at": T(50), "verdict": "pass",
+             "timeline": [{"name": "plan", "started_at": T(0), "ended_at": T(5)},
+                          {"name": "baseline", "started_at": T(5), "ended_at": T(20)},
+                          {"name": "patch loop", "started_at": T(20), "ended_at": T(49)}],
+             "sandboxes": [vm("baseline build", 5, 12, egress=[{"at": T(9), "canaries": ["CANARY-0001"], "dest": "203.0.113.7:80",
+                                                                "kind": "tcp", "bytes": 253}]),
+                           vm("baseline prove", 12, 20, execs=[{"argv": ["tls_probe", "hybrid"], "exit_code": 1}]),
+                           vm("attempt 2 build", 21, 40), vm("attempt 2 prove", 40, 49)],
+             "attempts": [{"number": 1, "tls_weakening": ["InsecureSkipVerify: true"], "outcome": "refused", "ok": False},
+                          {"number": 2, "tls_weakening": [], "outcome": "built and proved", "ok": True}],
+             "proofs": [{"step": "baseline", "name": "hybrid", "expected": "no connection", "actual": "no connection", "ok": True},
+                        {"step": "attempt 2", "name": "hybrid", "expected": "X25519MLKEM768", "actual": "X25519MLKEM768", "ok": True}]}
+        got = [(e["t"], e["kind"]) for e in web.replay(r)["events"]]
+        self.assertEqual(got, [
+            (0.0, "phase"), (5.0, "phase"), (5.0, "vm"), (9.0, "exfil"), (12.0, "vm-end"), (12.0, "vm"),
+            (20.0, "proof"), (20.0, "vm-end"),  # an expected tls_probe failure is not a failed microVM
+            (20.0, "refused"), (20.0, "phase"), (21.0, "attempt-start"), (21.0, "vm"), (40.0, "vm-end"), (40.0, "vm"),
+            (49.0, "proof"), (49.0, "attempt"), (49.0, "vm-end"), (50.0, "verdict")])
+
     def test_bad_requests(self):
         cases = [("POST", "/api/runs", b"{", 400), ("POST", "/api/runs", json.dumps({"repo": 7}).encode(), 400),
                  ("POST", "/api/runs", json.dumps({"repo": "a\nb"}).encode(), 400),
