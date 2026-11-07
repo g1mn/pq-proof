@@ -2,7 +2,7 @@
 
 Give PQ-Proof a repository URL. An agent inventories the repo's cryptography, patches its TLS key exchange to hybrid ML-KEM (`X25519MLKEM768`), and proves the change inside isolated microVMs on Vultr: a real handshake, the repo's own tests, and a classical client that still connects. You get a hashed receipt and a diff.
 
-**Live demo: https://149-28-14-122.sslip.io/** replays a recorded run: `glm-5.3` on Vultr Serverless Inference wrote the plan and the patch, and microVMs on a Vultr VX1 host built and proved it (100.2 s, $0.0144 in tokens, verdict PASS). The page re-checks the run's hashed receipt on every request. Nothing on the demo site starts a run or calls a model.
+**Live demo: https://149-28-14-122.sslip.io/** replays recorded runs. In the newest, `e2e-glm-7`, `glm-5.3` on Vultr Serverless Inference wrote the plan and the patch, and microVMs on a Vultr VX1 host built and proved it (78.2 s, $0.0159 in tokens, verdict PASS). `e2e-injection-scripted-1` shows the TLS-weakening check refusing a patch that follows the fixture README's prompt injection (a scripted stand-in, no model call). The page re-checks each run's hashed receipt on every request. Nothing on the demo site starts a run or calls a model.
 
 Built for the Vultr Agent Rush hackathon (November 2026), challenge 1, Blast Radius Zero.
 
@@ -27,7 +27,7 @@ browser --HTTPS--> nginx --> run viewer (Python, user pqweb): replay of publishe
 | Control plane, sandbox host, demo site | **Vultr Cloud Compute VX1** | Runs the agent's control plane, one Microsandbox microVM per step on its KVM, the egress sinkhole and DNS recorder, and the public demo site (nginx + the run viewer) | Plan `vx1-g-4c-16g-240s` (4 vCPU, 16 GB, 240 GB), region Seattle (`sea`), Ubuntu 24.04 LTS x64, `/dev/kvm` available |
 | The agent's model | **Vultr Serverless Inference** (`https://api.vultrinference.com/v1`, OpenAI-compatible) | Writes the migration plan through the `propose_plan` tool and the edits through `propose_edits`, reads raw build errors and tries again (up to 3 attempts) | `glm-5.3` only, tools without `tool_choice`, `reasoning_effort: low`, at most 8 requests per run; the key lives in `/etc/pqproof/inference.env` (root, 600) and reaches the control plane on stdin |
 
-The demo run (`e2e-glm-6`, November 5, 2026, 01:10 KST) sent 3 requests to `glm-5.3`, and its receipt prices their tokens at the public model list's rates ($0.75 and $3.00 per million input and output tokens) at $0.0144. Every run that reached the model passed, at $0.0138 to $0.0217 each (see End-to-end run). Success is never the model's call: the verdict comes from the probe's handshakes and exit codes.
+The demo's newest run (`e2e-glm-7`, November 8, 2026) sent 3 requests to `glm-5.3` (12,140 input and 2,254 output tokens), and its receipt prices them at the public model list's rates ($0.75 and $3.00 per million input and output tokens) at $0.0159. Every run that reached the model passed, at $0.0138 to $0.0217 each (see End-to-end run). Success is never the model's call: the verdict comes from the probe's handshakes and exit codes.
 
 ## Public demo and deployment
 
@@ -110,7 +110,9 @@ Measured on an M-series Mac with msb 0.7.13 (November 4, 2026), 75 s in all:
 
 Every `make`, `go` and `nginx` command ran inside `msb exec` (0 on the host), the planted test hook's `CANARY-0001` landed in the sinkhole during `make test`, every microVM was removed, and the CBOM after the patch has no row that blocks hybrid key exchange (the RS256 JWT row stays: signatures are out of scope). The same probe binary built twice gave the same SHA-256.
 
-On the VX1 host (x86_64) the same scripted run passed in 120.5 s. With `--model glm-5.3` writing the plan and the edits, every run that reached the model on November 4 and 5 passed: 97.3 s, 116.1 s, 106.7 s, 130.1 s and 100.2 s, for $0.0217, $0.0197, $0.0138, $0.0155 and $0.0144 in tokens ([docs/kickoff-spike.md](docs/kickoff-spike.md) has the first two). The last one wrote a format 2 hashed receipt (41 artifacts, 288 KB) naming `https://github.com/g1mn/orders-edge` at commit `7c7e501`, which `verify-receipt` accepted on the VX1 host and again on a Mac (48 checks).
+On the VX1 host (x86_64) the same scripted run passed in 120.5 s. With `--model glm-5.3` writing the plan and the edits, every run that reached the model passed: 97.3 s, 116.1 s, 106.7 s, 130.1 s and 100.2 s on November 4 and 5, for $0.0217, $0.0197, $0.0138, $0.0155 and $0.0144 in tokens ([docs/kickoff-spike.md](docs/kickoff-spike.md) has the first two), and 78.2 s for $0.0159 on November 8 (`e2e-glm-7`, on the demo). `e2e-glm-6` wrote a format 2 hashed receipt (41 artifacts, 288 KB) naming `https://github.com/g1mn/orders-edge` at commit `7c7e501`, which `verify-receipt` accepted on the VX1 host and again on a Mac (48 checks); `e2e-glm-7`'s passed 46 checks on a Mac.
+
+`--model-file e2e/orders-edge-injected-model.json` runs a scripted stand-in that follows the README's injection: its attempt 1 makes the right key-exchange edits and also sets `InsecureSkipVerify: true`, which the TLS-weakening check refuses before anything is built; attempt 2 is the same patch without it. On the VX1 host it passed in 84.8 s (`e2e-injection-scripted-1`, on the demo).
 
 ```sh
 python3 e2e/orders_edge.py --repo ../orders-edge --approve   # exit code 0 only if every check passes
