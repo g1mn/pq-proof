@@ -1,0 +1,239 @@
+{
+ "schema_version": 1,
+ "diagram_type": "sequence",
+ "meta": {
+  "title": "One PQ-Proof run: plan to receipt",
+  "output": ".archify/sequence-pqproof-run-20261108-1245/pq-proof-sequence.html",
+  "locale": "en",
+  "quality_profile": "showcase"
+ },
+ "participants": [
+  {
+   "id": "operator",
+   "type": "external",
+   "label": "Operator",
+   "sublabel": "approver"
+  },
+  {
+   "id": "control",
+   "type": "backend",
+   "label": "Control plane",
+   "sublabel": "VX1 host"
+  },
+  {
+   "id": "model",
+   "type": "cloud",
+   "label": "glm-5.3",
+   "sublabel": "Serverless Inference"
+  },
+  {
+   "id": "vm",
+   "type": "security",
+   "label": "microVM",
+   "sublabel": "egress denied"
+  },
+  {
+   "id": "probe",
+   "type": "security",
+   "label": "tls_probe",
+   "sublabel": "pinned client"
+  },
+  {
+   "id": "receipt",
+   "type": "database",
+   "label": "Receipt",
+   "sublabel": "hashed"
+  }
+ ],
+ "segments": [
+  {
+   "from": 160,
+   "to": 330,
+   "label": "Plan and approve"
+  },
+  {
+   "from": 340,
+   "to": 555,
+   "label": "Patch and build"
+  },
+  {
+   "from": 562,
+   "to": 675,
+   "label": "Prove"
+  },
+  {
+   "from": 685,
+   "to": 760,
+   "label": "Receipt"
+  }
+ ],
+ "messages": [
+  {
+   "id": "start-run",
+   "from": "operator",
+   "to": "control",
+   "y": 175,
+   "label": "run repo",
+   "variant": "emphasis"
+  },
+  {
+   "id": "ask-plan",
+   "from": "control",
+   "to": "model",
+   "y": 205,
+   "label": "propose_plan",
+   "variant": "emphasis",
+   "note": "repo files, CBOM rows, README as untrusted notes"
+  },
+  {
+   "id": "plan-back",
+   "from": "model",
+   "to": "control",
+   "y": 262,
+   "label": "plan (tool call)",
+   "variant": "return"
+  },
+  {
+   "id": "approve",
+   "from": "operator",
+   "to": "control",
+   "y": 292,
+   "label": "approve",
+   "variant": "security",
+   "note": "plan compiles into the allowlist"
+  },
+  {
+   "id": "ask-edits",
+   "from": "control",
+   "to": "model",
+   "y": 355,
+   "label": "propose_edits",
+   "variant": "emphasis"
+  },
+  {
+   "id": "edits-back",
+   "from": "model",
+   "to": "control",
+   "y": 385,
+   "label": "edits",
+   "variant": "return",
+   "note": "TLS-weakening check runs before any build"
+  },
+  {
+   "id": "build",
+   "from": "control",
+   "to": "vm",
+   "y": 440,
+   "label": "build + make test",
+   "variant": "emphasis",
+   "note": "fresh microVM, offline, allowlisted commands only"
+  },
+  {
+   "id": "build-result",
+   "from": "vm",
+   "to": "control",
+   "y": 497,
+   "label": "exit codes, logs",
+   "variant": "return",
+   "note": "a failure sends the raw error back to the model, 3 attempts at most"
+  },
+  {
+   "id": "prove",
+   "from": "control",
+   "to": "probe",
+   "y": 570,
+   "label": "controls, then handshakes",
+   "variant": "security"
+  },
+  {
+   "id": "handshake",
+   "from": "probe",
+   "to": "vm",
+   "y": 600,
+   "label": "X25519MLKEM768 only",
+   "variant": "emphasis",
+   "note": "and a classical client must still connect"
+  },
+  {
+   "id": "verdict",
+   "from": "probe",
+   "to": "control",
+   "y": 655,
+   "label": "verdict",
+   "variant": "return"
+  },
+  {
+   "id": "destroy",
+   "from": "control",
+   "to": "vm",
+   "y": 697,
+   "label": "msb rm --force",
+   "variant": "dashed"
+  },
+  {
+   "id": "write-receipt",
+   "from": "control",
+   "to": "receipt",
+   "y": 727,
+   "label": "hash everything",
+   "variant": "emphasis",
+   "note": "receipt_id = SHA-256 over JCS"
+  }
+ ],
+ "activations": [
+  {
+   "participant": "control",
+   "from": 175,
+   "to": 737,
+   "type": "backend"
+  },
+  {
+   "participant": "model",
+   "from": 205,
+   "to": 268,
+   "type": "cloud"
+  },
+  {
+   "participant": "model",
+   "from": 355,
+   "to": 391,
+   "type": "cloud"
+  },
+  {
+   "participant": "vm",
+   "from": 440,
+   "to": 702,
+   "type": "security"
+  },
+  {
+   "participant": "probe",
+   "from": 570,
+   "to": 661,
+   "type": "security"
+  }
+ ],
+ "cards": [
+  {
+   "dot": "cyan",
+   "title": "Model proposes",
+   "items": [
+    "Plan and edits arrive only as declared tool calls",
+    "Malformed or undeclared tool calls are refused"
+   ]
+  },
+  {
+   "dot": "amber",
+   "title": "Human gate",
+   "items": [
+    "Approval turns the plan into an allowlist of exact commands, files and pinned images"
+   ]
+  },
+  {
+   "dot": "emerald",
+   "title": "Probe decides",
+   "items": [
+    "The verdict comes from handshakes and exit codes, never from the model"
+   ]
+  }
+ ]
+}

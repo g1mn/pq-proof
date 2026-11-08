@@ -1,0 +1,293 @@
+{
+ "schema_version": 1,
+ "diagram_type": "architecture",
+ "meta": {
+  "title": "PQ-Proof on Vultr: fix, prove, receipt",
+  "output": ".archify/architecture-pqproof-20261108-1240/pq-proof-architecture.html",
+  "locale": "en",
+  "quality_profile": "showcase"
+ },
+ "components": [
+  {
+   "id": "operator",
+   "type": "external",
+   "label": "Operator",
+   "sublabel": "SSH, approves the plan",
+   "pos": [
+    20,
+    250
+   ],
+   "size": [
+    130,
+    64
+   ],
+   "icon": "person"
+  },
+  {
+   "id": "inference",
+   "type": "cloud",
+   "label": "Vultr Serverless Inference",
+   "sublabel": "glm-5.3, OpenAI-compatible",
+   "pos": [
+    270,
+    60
+   ],
+   "size": [
+    200,
+    64
+   ],
+   "tag": "plans and patches"
+  },
+  {
+   "id": "control",
+   "type": "backend",
+   "label": "Control plane",
+   "sublabel": "Python, user pqproof",
+   "pos": [
+    270,
+    250
+   ],
+   "size": [
+    200,
+    64
+   ],
+   "tag": "API key stays here"
+  },
+  {
+   "id": "microvm",
+   "type": "security",
+   "label": "Microsandbox microVM",
+   "sublabel": "one per step, own KVM kernel",
+   "pos": [
+    640,
+    250
+   ],
+   "size": [
+    210,
+    64
+   ],
+   "tag": "build + repo servers"
+  },
+  {
+   "id": "probe",
+   "type": "security",
+   "label": "Pinned tls_probe",
+   "sublabel": "controls first, then handshakes",
+   "pos": [
+    640,
+    430
+   ],
+   "size": [
+    210,
+    64
+   ],
+   "tag": "decides the verdict"
+  },
+  {
+   "id": "sinkhole",
+   "type": "security",
+   "label": "Sinkhole + DNS recorder",
+   "sublabel": "records dest, bytes, canary",
+   "pos": [
+    980,
+    250
+   ],
+   "size": [
+    180,
+    64
+   ]
+  },
+  {
+   "id": "internet",
+   "type": "external",
+   "label": "Internet, host, metadata",
+   "sublabel": "dropped, not counted",
+   "pos": [
+    980,
+    60
+   ],
+   "size": [
+    180,
+    64
+   ]
+  },
+  {
+   "id": "receipt",
+   "type": "database",
+   "label": "Hashed receipt",
+   "sublabel": "commands, logs, digests, CBOM",
+   "pos": [
+    270,
+    430
+   ],
+   "size": [
+    200,
+    64
+   ],
+   "tag": "verify-receipt"
+  },
+  {
+   "id": "viewer",
+   "type": "frontend",
+   "label": "Run viewer",
+   "sublabel": "replay only, user pqweb",
+   "pos": [
+    270,
+    610
+   ],
+   "size": [
+    200,
+    64
+   ]
+  },
+  {
+   "id": "nginx",
+   "type": "cloud",
+   "label": "nginx + Let's Encrypt",
+   "sublabel": "TLS front, rate limits",
+   "pos": [
+    640,
+    610
+   ],
+   "size": [
+    210,
+    64
+   ]
+  },
+  {
+   "id": "browser",
+   "type": "external",
+   "label": "Visitor browser",
+   "sublabel": "149-28-14-122.sslip.io",
+   "pos": [
+    640,
+    800
+   ],
+   "size": [
+    210,
+    64
+   ]
+  }
+ ],
+ "boundaries": [
+  {
+   "kind": "region",
+   "label": "Vultr Cloud Compute VX1, Seattle (vx1-g-4c-16g-240s)",
+   "wraps": [
+    "control",
+    "microvm",
+    "probe",
+    "sinkhole",
+    "receipt",
+    "viewer",
+    "nginx"
+   ]
+  },
+  {
+   "kind": "security-group",
+   "label": "microVM: --no-net, egress denied",
+   "wraps": [
+    "microvm",
+    "probe"
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "operator-runs",
+   "from": "operator",
+   "to": "control",
+   "label": "SSH, approve",
+   "variant": "emphasis"
+  },
+  {
+   "id": "control-model",
+   "from": "control",
+   "to": "inference",
+   "label": "plan, edits",
+   "variant": "emphasis"
+  },
+  {
+   "id": "control-sandbox",
+   "from": "control",
+   "to": "microvm",
+   "label": "msb create, exec, rm",
+   "variant": "emphasis"
+  },
+  {
+   "id": "sandbox-sinkhole",
+   "from": "microvm",
+   "to": "sinkhole",
+   "label": "DNS, 203.0.113.0/24",
+   "variant": "security"
+  },
+  {
+   "id": "sandbox-dropped",
+   "from": "microvm",
+   "to": "internet",
+   "label": "anything else: dropped",
+   "variant": "dashed"
+  },
+  {
+   "id": "probe-handshake",
+   "from": "probe",
+   "to": "microvm",
+   "label": "hybrid + classical handshakes",
+   "variant": "security"
+  },
+  {
+   "id": "control-receipt",
+   "from": "control",
+   "to": "receipt",
+   "label": "hash every step"
+  },
+  {
+   "id": "receipt-viewer",
+   "from": "receipt",
+   "to": "viewer",
+   "label": "published copy"
+  },
+  {
+   "id": "browser-front",
+   "from": "browser",
+   "to": "nginx",
+   "label": "HTTPS GET",
+   "variant": "emphasis"
+  },
+  {
+   "id": "front-viewer",
+   "from": "nginx",
+   "to": "viewer",
+   "label": "127.0.0.1:8080"
+  }
+ ],
+ "cards": [
+  {
+   "dot": "cyan",
+   "title": "The model proposes",
+   "items": [
+    "glm-5.3 writes the plan and the edits through declared tools",
+    "An approved plan compiles into an allowlist: exact commands, files, digest-pinned images",
+    "Raw build errors go back to the model, 3 attempts at most"
+   ]
+  },
+  {
+   "dot": "rose",
+   "title": "Blast radius zero",
+   "items": [
+    "Every build and test runs in a fresh microVM, never on the host",
+    "Egress denied: only a recording DNS resolver and a documentation-range sinkhole answer",
+    "Each microVM is destroyed and its destruction time is recorded"
+   ]
+  },
+  {
+   "dot": "emerald",
+   "title": "The probe decides",
+   "items": [
+    "Positive and negative controls must pass before any server is judged",
+    "Hybrid-only client must negotiate X25519MLKEM768; a classical client must still connect",
+    "Everything lands in a hashed receipt anyone can verify again"
+   ]
+  }
+ ]
+}

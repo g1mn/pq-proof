@@ -1,12 +1,39 @@
 # PQ-Proof
 
+<p align="center"><img src="docs/media/hero.png" alt="PQ-Proof. Fix it. Prove it. Keep the receipt. An AI agent on Vultr that moves a repo to quantum-safe TLS (X25519MLKEM768) and proves it with real handshakes in isolated, single-use test computers. Over 50% of human traffic to Cloudflare is quantum-safe, but only 3.7% of the origin servers behind it support X25519MLKEM768 (Cloudflare, Oct 2025)." width="100%"></p>
+
+<p align="center">
+<img src="docs/media/badges/verdict.svg" alt="verdict (e2e-glm-7): PASS">
+<img src="docs/media/badges/kex.svg" alt="key exchange: X25519MLKEM768">
+<img src="docs/media/badges/runtime.svg" alt="run: 78.2 s">
+<img src="docs/media/badges/inference.svg" alt="inference: $0.0159 per run">
+<img src="docs/media/badges/microvms.svg" alt="microVMs destroyed: 5 / 5">
+<img src="docs/media/badges/host-builds.svg" alt="build commands on host: 0">
+<img src="docs/media/badges/real-keys.svg" alt="real keys exposed: 0">
+<img src="docs/media/badges/receipt.svg" alt="receipt: 46 checks match">
+</p>
+
+<p align="center"><img src="docs/media/demo-loop.gif" alt="Demo loop: the real run e2e-glm-7 replayed on the public demo (PASS in 78.2 s), the planted test hook's canary caught by the sinkhole, real keys exposed: 0." width="100%"></p>
+
 Give PQ-Proof a repository URL. An agent inventories the repo's cryptography, patches its TLS key exchange to hybrid ML-KEM (`X25519MLKEM768`), and proves the change inside isolated microVMs on Vultr: a real handshake, the repo's own tests, and a classical client that still connects. You get a hashed receipt and a diff.
 
 **Live demo: https://149-28-14-122.sslip.io/** replays recorded runs. In the newest, `e2e-glm-7`, `glm-5.3` on Vultr Serverless Inference wrote the plan and the patch, and microVMs on a Vultr VX1 host built and proved it (78.2 s, $0.0159 in tokens, verdict PASS). `e2e-injection-scripted-1` shows the TLS-weakening check refusing a patch that follows the fixture README's prompt injection (a scripted stand-in, no model call). The page re-checks each run's hashed receipt on every request. Nothing on the demo site starts a run or calls a model.
 
-Built for the Vultr Agent Rush hackathon (November 2026), challenge 1, Blast Radius Zero. Demo video (4:54): [PQ-Proof-demo.mp4](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-demo.mp4) · slides: [PQ-Proof-slides.pdf](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-slides.pdf) · fixture repository: [g1mn/orders-edge](https://github.com/g1mn/orders-edge) · team: g1mn, solo builder.
+Built for the Vultr Agent Rush hackathon (November 2026), challenge 1, Blast Radius Zero. Demo video (3:27): [PQ-Proof-demo-v3.mp4](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-demo-v3.mp4) · slides: [PQ-Proof-slides-v2.pdf](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-slides-v2.pdf) · fixture repository: [g1mn/orders-edge](https://github.com/g1mn/orders-edge) · team: g1mn, solo builder.
+
+<p align="center"><img src="docs/media/metrics.png" alt="One real run, e2e-glm-7: PASS in 78.2 s, $0.0159 of inference (3 requests, 12,140 input and 2,254 output tokens), 5 of 5 microVMs destroyed, 0 build commands on the host (7 inside microVMs), 0 real keys exposed (CANARY-0001 caught by the sinkhole)." width="100%"></p>
+
+Diagrams below are made with [archify](docs/diagrams/README.md). Each has a PNG, a dark and a light SVG, and an interactive HTML copy in [docs/diagrams/](docs/diagrams/).
 
 ## Architecture
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/architecture.dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/diagrams/architecture.light.svg">
+  <img src="docs/diagrams/architecture.png" alt="Architecture: the operator approves over SSH; the control plane on a Vultr VX1 host asks glm-5.3 on Vultr Serverless Inference for the plan and edits, runs every build and test in a Microsandbox microVM with --no-net, where only the DNS recorder and the 203.0.113.0/24 sinkhole answer; a pinned tls_probe decides the verdict; every step is hashed into the receipt, which the replay-only run viewer serves behind nginx and Let's Encrypt." width="100%">
+</picture>
+
+Interactive version: [docs/diagrams/architecture.html](docs/diagrams/architecture.html) (download and open; motion, focus and export work offline).
 
 The control plane is one Python (3.12+) process that sticks to the standard library where it can. It drives [Microsandbox](https://github.com/superradcompany/microsandbox) through the `msb` CLI from the official installer, so every action that touches a sandbox is a plain command line that is logged and can go into the receipt. Model calls go to Vultr Serverless Inference's OpenAI-compatible `/v1/chat/completions` endpoint over `urllib`; the agent needs no SDK, and the API key never leaves the control plane. Receipts are written to the VX1 host's disk. The web UI is a static HTML page with plain JavaScript and CSS, served from the standard library's `http.server`, with no build step and nothing loaded from another site (see Web UI). We chose Python because Microsandbox's docs and Vultr's sandboxing guide both use it, Ubuntu 24.04 on the VX1 host ships Python 3.12, and this is a one-person, 4.5-day build.
 
@@ -59,6 +86,16 @@ PQ-Proof calls one model, `glm-5.3`, for planning, patching and tool calls; no o
 
 `pqproof/inference.py` calls `POST /v1/chat/completions` with `Authorization: Bearer` and retries HTTP 429 and 5xx with backoff, honouring `Retry-After`. It does not trust `tool_calls`, because a prompt injection in the target repo can steer the model: a call to a tool the request did not declare, or with arguments that are not a JSON object, repeat a key, miss a required field, add an undeclared one or have the wrong type, comes back with an error on that call and no arguments. Any other malformed response raises `InferenceError`, and call ids are made unique. It reads the key from `VULTR_INFERENCE_API_KEY`; keep the key outside the repository. The client does not follow redirects, so the `Authorization` header cannot be carried to another host, and it redacts the key from any error text, including a server's own error message.
 
+## One run, step by step
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/sequence.dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/diagrams/sequence.light.svg">
+  <img src="docs/diagrams/sequence.png" alt="Sequence of one run: the operator starts the run; the control plane asks glm-5.3 for a plan (propose_plan); the operator approves and the plan compiles into the allowlist; the model proposes edits; the TLS-weakening check runs before any build; build and make test run in a fresh microVM; a failure sends the raw error back to the model, 3 attempts at most; tls_probe runs its controls, then hybrid-only and classical handshakes; the microVM is removed with msb rm --force; everything is hashed into the receipt." width="100%">
+</picture>
+
+The model proposes; a human approves; the probe decides. Interactive version: [docs/diagrams/sequence.html](docs/diagrams/sequence.html).
+
 ## Plan and allowlist
 
 A human approves the model's plan (JSON; the schema is `PLAN_SCHEMA` in `pqproof/plan.py`). The approved plan compiles into an allowlist of exact command lines, repo-relative file paths and base images. An image must be a Docker Hub official image pinned by digest, such as `golang:1.25-bookworm@sha256:<64 hex>`; a tag alone is refused because the registry owner can move it, and so is any other registry. A command may use only `make` (targets), `go` (`build`, `test` or `vet` on packages, a few fixed flags, and `-o=` a path inside the work tree), `nginx` (`-t`, `-c` with absolute config paths) and PQ-Proof's own `tls_probe` (fixed subcommands, loopback addresses and absolute paths only). A plan may also run, by name and with `-flag=value` arguments only, a program it builds itself with `go build -o=out/NAME` (the server it is about to prove; a name like `sh`, `curl` or `install` is refused), and it must list at least one target to probe inside the prove microVM: a loopback address (`127.0.0.1:PORT`, never the probe's own `127.0.0.1:4433` or `127.0.0.1:4434`) and the server that must own that port (`nginx` or a program the plan builds). The approval screen shows each one, and a run that probes nothing is a failure, not a pass. Every other program is refused, and so is any argument outside those shapes, such as `go build -toolexec`, `make --eval` or `nginx -g`. That limits what the model can ask for. It does not make the repository's own code safe: `make test` runs the repo's Makefile recipes with `/bin/sh` and `go test` runs its test code. That code is untrusted and runs only inside a microVM with egress denied, which is the real boundary (see Containment). The plan has no field for egress hosts because sandboxes get none. Its free text, the summary and each edit's reason, must be one line of printable characters (at most 500 and 300), because the approval screen prints it as it is and a terminal escape sequence could otherwise hide the image and command lines below it. The allowlist does not read file contents: a change like `InsecureSkipVerify: true` inside an approved file is caught by a deterministic TLS-weakening check on the patch (`pqproof/verify.py`, see Patch loop).
@@ -80,6 +117,14 @@ Success is decided by a handshake, not by a model. The client is `tls_probe` (`p
 Base images are pinned by OCI index digest (`pqproof/images.py`), so one pin works on an arm64 Mac and on the amd64 VX1 host. Measured with msb 0.7.13: `msb pull` resolves an index digest to the host's platform, and `msb image inspect` then reports the platform manifest digest, which is what a receipt records.
 
 ## Containment
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/containment.dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/diagrams/containment.light.svg">
+  <img src="docs/diagrams/containment.png" alt="Containment data flow: the planted test hook runs in make test and POSTs its canary; the microVM's msb --no-net policy lets only DNS (to a recorder that answers NXDOMAIN) and TCP to 203.0.113.0/24 (to the sinkhole proxy, which records the bytes) through; everything else, including the internet, the host and the cloud metadata address, is dropped; the sinkhole's record (CANARY-0001, 253 bytes) and the DNS queries go into receipt.json." width="100%">
+</picture>
+
+Interactive version: [docs/diagrams/containment.html](docs/diagrams/containment.html).
 
 Each step runs in a fresh Microsandbox microVM with its own kernel. A step can copy files in (`msb copy`), run several allowlisted commands, start a server as a background job (`msb exec -d`) and copy one built file out; a copied-out file that is not a regular file (a symlink the guest planted, say) is deleted and refused, and `msb copy` runs under a 256 MiB file size limit (`RLIMIT_FSIZE`, set for that process only), so a guest cannot fill the host's disk through it. The control plane creates it with `--cpus`, `--memory` and `--max-duration` (defaults: 1 vCPU, 1 GiB, 120 s), labels it `app=pqproof`, and lets it use only images the control plane has already pulled (`--pull never`). The runner itself refuses any image or command line that the step's approved allowlist does not hold, and passes the image after `--` so it is never read as an `msb` option. The host also times `msb exec` and always runs `msb rm --force` afterwards. A reaper (`Runner.start_reaper`, started by the e2e run) removes, at startup and every minute, any labelled sandbox that is stopped or older than the longest step's wall clock (300 s) plus a minute, so a control plane that was killed leaves nothing running for long; a step cannot ask for more than 300 s, so the reaper never removes a live one. Every `msb` command line is kept for the receipt, and so is each step's output, cut to the first and last 512 KiB of each stream with the full stream's byte count and SHA-256, so a step that floods its output cannot fill the control plane's memory. `msb` runs with only `PATH`, `HOME` and its own `MSB_*` settings in its environment, because it passes that environment on to each sandbox's VMM process; the inference API key is never in it.
 
@@ -126,6 +171,8 @@ sudo -u pqproof python3 e2e/orders_edge.py --repo /opt/pqproof/orders-edge/curre
 ```
 
 ## Hashed receipt
+
+<p align="center"><img src="docs/media/receipt.png" alt="Receipt example, run e2e-glm-7: receipt_id 73f65d59f6077fcf04aefffa69d7faecc11ecfdd424e770bf26dbb7be54c4c19; repo github.com/g1mn/orders-edge at 7c7e501; verdict pass; tls_probe 0.3.0; 5 microVMs created and destroyed, each --no-net; 2 attempts reached the sinkhole with CANARY-0001; glm-5.3, 3 requests, $0.015867; JWT RS256 reported as not fixed; 39 artifacts, each with its SHA-256." width="100%"></p>
 
 Each end-to-end run that reaches its checks writes a receipt directory, `--out/receipt` (`pqproof/receipt.py`):
 

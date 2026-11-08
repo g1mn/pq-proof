@@ -1,0 +1,161 @@
+{
+ "schema_version": 1,
+ "diagram_type": "dataflow",
+ "meta": {
+  "title": "Containment: a planted hook's canary ends in the sinkhole",
+  "output": ".archify/dataflow-pqproof-containment-20261108-1250/pq-proof-containment.html",
+  "locale": "en",
+  "quality_profile": "showcase",
+  "legend": {
+   "entries": {
+    "dashed": {
+     "label": "dropped by the microVM's policy"
+    },
+    "security": {
+     "label": "untrusted traffic, recorded"
+    }
+   }
+  }
+ },
+ "stages": [
+  {
+   "label": "Inside the microVM"
+  },
+  {
+   "label": "Network policy"
+  },
+  {
+   "label": "Host recorders"
+  },
+  {
+   "label": "Receipt"
+  }
+ ],
+ "nodes": [
+  {
+   "id": "hook",
+   "type": "external",
+   "label": "Planted test hook",
+   "sublabel": "runs in make test",
+   "stage": 0,
+   "row": 1,
+   "tag": "phones home",
+   "width": 140
+  },
+  {
+   "id": "policy",
+   "type": "security",
+   "label": "msb --no-net",
+   "sublabel": "2 allow rules only",
+   "stage": 1,
+   "row": 1,
+   "tag": "egress denied"
+  },
+  {
+   "id": "dns",
+   "type": "security",
+   "label": "DNS recorder",
+   "sublabel": "answers NXDOMAIN",
+   "stage": 2,
+   "row": 0
+  },
+  {
+   "id": "sinkhole",
+   "type": "security",
+   "label": "Sinkhole proxy",
+   "sublabel": "203.0.113.0/24",
+   "stage": 2,
+   "row": 1,
+   "tag": "records bytes"
+  },
+  {
+   "id": "dropped",
+   "type": "external",
+   "label": "Internet + host",
+   "sublabel": "+ metadata: never reached",
+   "stage": 2,
+   "row": 2,
+   "width": 150
+  },
+  {
+   "id": "receipt",
+   "type": "database",
+   "label": "receipt.json",
+   "sublabel": "per-microVM egress",
+   "stage": 3,
+   "row": 1,
+   "tag": "hashed"
+  }
+ ],
+ "flows": [
+  {
+   "id": "hook-post",
+   "from": "hook",
+   "to": "policy",
+   "label": "POST canary",
+   "variant": "security",
+   "route": "straight"
+  },
+  {
+   "id": "policy-dns",
+   "from": "policy",
+   "to": "dns",
+   "label": "DNS query",
+   "variant": "security",
+   "fromSide": "top",
+   "toSide": "left"
+  },
+  {
+   "id": "policy-sinkhole",
+   "from": "policy",
+   "to": "sinkhole",
+   "label": "TCP to 203.0.113.7",
+   "variant": "security",
+   "route": "straight"
+  },
+  {
+   "id": "policy-drop",
+   "from": "policy",
+   "to": "dropped",
+   "label": "everything else",
+   "variant": "dashed",
+   "fromSide": "bottom",
+   "toSide": "left"
+  },
+  {
+   "id": "dns-record",
+   "from": "dns",
+   "to": "receipt",
+   "label": "queries",
+   "variant": "default",
+   "fromSide": "right",
+   "toSide": "top"
+  },
+  {
+   "id": "sinkhole-record",
+   "from": "sinkhole",
+   "to": "receipt",
+   "label": "canary, 253 bytes",
+   "variant": "emphasis",
+   "route": "straight"
+  }
+ ],
+ "cards": [
+  {
+   "dot": "rose",
+   "title": "What the hook tried",
+   "items": [
+    "Run e2e-glm-7: POST /v1/report to 203.0.113.7:80 during make test",
+    "The canary CANARY-0001 reached the sinkhole; real keys exposed: 0"
+   ]
+  },
+  {
+   "dot": "cyan",
+   "title": "Why it is safe",
+   "items": [
+    "203.0.113.0/24 is a documentation range that is never routed",
+    "Policy drops are blocked but not counted; the receipt says so"
+   ]
+  }
+ ]
+}
