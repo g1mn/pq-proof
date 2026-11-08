@@ -1,27 +1,27 @@
 # PQ-Proof
 
-<p align="center"><img src="docs/media/hero.png" alt="PQ-Proof. Fix it. Prove it. Keep the receipt. An AI agent on Vultr that moves a repo to quantum-safe TLS (X25519MLKEM768) and proves it with real handshakes in isolated, single-use test computers. Over 50% of human traffic to Cloudflare is quantum-safe, but only 3.7% of the origin servers behind it support X25519MLKEM768 (Cloudflare, Oct 2025)." width="100%"></p>
+<p align="center"><img src="docs/media/hero.png" alt="PQ-Proof. Fix it. Prove it. Keep the receipt. An AI agent on Vultr that moves a repo's TLS to quantum-safe key exchange (X25519MLKEM768) and proves it with real handshakes in isolated, single-use test computers. Over 50% of human traffic to Cloudflare uses quantum-safe key exchange, but only 3.7% of the origin servers behind it support X25519MLKEM768 (Cloudflare, Oct 2025)." width="100%"></p>
 
 <p align="center">
 <img src="docs/media/badges/verdict.svg" alt="verdict (e2e-glm-7): PASS">
 <img src="docs/media/badges/kex.svg" alt="key exchange: X25519MLKEM768">
 <img src="docs/media/badges/runtime.svg" alt="run: 78.2 s">
-<img src="docs/media/badges/inference.svg" alt="inference: $0.0159 per run">
+<img src="docs/media/badges/inference.svg" alt="inference: $0.0159 for run e2e-glm-7">
 <img src="docs/media/badges/microvms.svg" alt="microVMs destroyed: 5 / 5">
 <img src="docs/media/badges/host-builds.svg" alt="build commands on host: 0">
-<img src="docs/media/badges/real-keys.svg" alt="real keys exposed: 0">
-<img src="docs/media/badges/receipt.svg" alt="receipt: 46 checks match">
+<img src="docs/media/badges/real-keys.svg" alt="real keys exposed: 0 (none inside the microVM by design)">
+<img src="docs/media/badges/receipt.svg" alt="receipt: 46 checks pass">
 </p>
 
 <p align="center"><img src="docs/media/demo-loop.gif" alt="Demo loop: the real run e2e-glm-7 replayed on the public demo (PASS in 78.2 s), the planted test hook's canary caught by the sinkhole, real keys exposed: 0." width="100%"></p>
 
 Give PQ-Proof a repository URL. An agent inventories the repo's cryptography, patches its TLS key exchange to hybrid ML-KEM (`X25519MLKEM768`), and proves the change inside isolated microVMs on Vultr: a real handshake, the repo's own tests, and a classical client that still connects. You get a hashed receipt and a diff.
 
-**Live demo: https://149-28-14-122.sslip.io/** replays recorded runs. In the newest, `e2e-glm-7`, `glm-5.3` on Vultr Serverless Inference wrote the plan and the patch, and microVMs on a Vultr VX1 host built and proved it (78.2 s, $0.0159 in tokens, verdict PASS). `e2e-injection-scripted-1` shows the TLS-weakening check refusing a patch that follows the fixture README's prompt injection (a scripted stand-in, no model call). The page re-checks each run's hashed receipt on every request. Nothing on the demo site starts a run or calls a model.
+**Live demo: https://149-28-14-122.sslip.io/** replays recorded runs. In the newest, `e2e-glm-7`, `glm-5.3` on Vultr Serverless Inference wrote the plan and the patch, and microVMs on a Vultr VX1 host built and proved it (78.2 s, $0.0159 in tokens, verdict PASS). `e2e-injection-scripted-1` shows the TLS-weakening check refusing a patch that follows the fixture README's prompt injection (a scripted stand-in, no model call). The page checks each run's hashed receipt (46 checks for `e2e-glm-7`) and checks it again whenever a file in it changes. Nothing on the demo site starts a run or calls a model.
 
-Built for the Vultr Agent Rush hackathon (November 2026), challenge 1, Blast Radius Zero. Demo video (3:27): [PQ-Proof-demo-v3.mp4](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-demo-v3.mp4) · slides: [PQ-Proof-slides-v2.pdf](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-slides-v2.pdf) · fixture repository: [g1mn/orders-edge](https://github.com/g1mn/orders-edge) · team: g1mn, solo builder.
+Built for the Vultr Agent Rush hackathon (November 2026), challenge 1, Blast Radius Zero. Demo video (3:32): [PQ-Proof-demo-v4.mp4](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-demo-v4.mp4) · slides: [PQ-Proof-slides-v3.pdf](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-slides-v3.pdf) · fixture repository: [g1mn/orders-edge](https://github.com/g1mn/orders-edge) · team: g1mn, solo builder.
 
-<p align="center"><img src="docs/media/metrics.png" alt="One real run, e2e-glm-7: PASS in 78.2 s, $0.0159 of inference (3 requests, 12,140 input and 2,254 output tokens), 5 of 5 microVMs destroyed, 0 build commands on the host (7 inside microVMs), 0 real keys exposed (CANARY-0001 caught by the sinkhole)." width="100%"></p>
+<p align="center"><img src="docs/media/metrics.png" alt="One real run, e2e-glm-7: PASS in 78.2 s, $0.0159 of inference (3 requests, 12,140 input and 2,254 output tokens), 5 of 5 microVMs destroyed, 0 build commands on the host (7 inside microVMs), 0 real keys exposed (none inside the microVM by design; the hook reports presence only; CANARY-0001 caught by the sinkhole)." width="100%"></p>
 
 Diagrams below are made with [archify](docs/diagrams/README.md). Each has a PNG, a dark and a light SVG, and an interactive HTML copy in [docs/diagrams/](docs/diagrams/).
 
@@ -94,7 +94,7 @@ PQ-Proof calls one model, `glm-5.3`, for planning, patching and tool calls; no o
   <img src="docs/diagrams/sequence.png" alt="Sequence of one run: the operator starts the run; the control plane asks glm-5.3 for a plan (propose_plan); the operator approves and the plan compiles into the allowlist; the model proposes edits; the TLS-weakening check runs before any build; build and make test run in a fresh microVM; a failure sends the raw error back to the model, 3 attempts at most; tls_probe runs its controls, then hybrid-only and classical handshakes; the microVM is removed with msb rm --force; everything is hashed into the receipt." width="100%">
 </picture>
 
-The model proposes; a human approves; the probe decides. Interactive version: [docs/diagrams/sequence.html](docs/diagrams/sequence.html).
+The model proposes, a human approves, the probe decides. The recorded runs, `e2e-glm-7` included, approved the plan with `--approve`, so no human reviewed it; without the flag the operator approves at the prompt. Interactive version: [docs/diagrams/sequence.html](docs/diagrams/sequence.html).
 
 ## Plan and allowlist
 
@@ -196,7 +196,7 @@ It validates `receipt.json` against the schema, recomputes `receipt_id`, the byt
 python3 -m pqproof web --runs runs/   # http://127.0.0.1:8080/ ; each run directory is an e2e --out
 ```
 
-`pqproof/web.py` serves one page (`pqproof/static/`: HTML, CSS and plain JavaScript, no build step) and a small JSON API over the run directories under `--runs`; it never runs anything itself. For the chosen run the page shows the verdict, a replay of the run (the job timeline of control-plane phases and every microVM fills in as the recorded clock advances, sped up to about 25 s, next to the receipt's events in time order: each microVM created and destroyed with its image and limits, each canary that reached the sinkhole, each patch refused for weakening TLS, each proof with its expected and actual result, the verdict; built from the receipt alone, so opening it starts nothing, calls no model and needs no network), the containment panel (each canary that reached the sinkhole with the bytes it sent, patches refused for weakening TLS, how many egress attempts reached the sinkhole, `not counted` for what the policy dropped, host build commands, microVMs destroyed, and each microVM's network flags), the CBOM before and after side by side, the proofs, the attempts and the diff that passed, and the receipt with its links. Every request for a run re-checks its receipt with the same code as `verify-receipt` (the result is kept until a file in that receipt directory changes), and the page says whether all hashes matched.
+`pqproof/web.py` serves one page (`pqproof/static/`: HTML, CSS and plain JavaScript, no build step) and a small JSON API over the run directories under `--runs`; it never runs anything itself. For the chosen run the page shows the verdict, a replay of the run (the job timeline of control-plane phases and every microVM fills in as the recorded clock advances, sped up to about 25 s, next to the receipt's events in time order: each microVM created and destroyed with its image and limits, each canary that reached the sinkhole, each patch refused for weakening TLS, each proof with its expected and actual result, the verdict; built from the receipt alone, so opening it starts nothing, calls no model and needs no network), the containment panel (each canary that reached the sinkhole with the bytes it sent, patches refused for weakening TLS, how many egress attempts reached the sinkhole, `not counted` for what the policy dropped, host build commands, microVMs destroyed, and each microVM's network flags), the CBOM before and after side by side, the proofs, the attempts and the diff that passed, and the receipt with its links. The page checks each run's receipt with the same code as `verify-receipt`, keeps the result until a file in that receipt directory changes, and says whether all checks passed.
 
 | Request | Answer |
 |---|---|
