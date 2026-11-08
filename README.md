@@ -4,7 +4,7 @@ Give PQ-Proof a repository URL. An agent inventories the repo's cryptography, pa
 
 **Live demo: https://149-28-14-122.sslip.io/** replays recorded runs. In the newest, `e2e-glm-7`, `glm-5.3` on Vultr Serverless Inference wrote the plan and the patch, and microVMs on a Vultr VX1 host built and proved it (78.2 s, $0.0159 in tokens, verdict PASS). `e2e-injection-scripted-1` shows the TLS-weakening check refusing a patch that follows the fixture README's prompt injection (a scripted stand-in, no model call). The page re-checks each run's hashed receipt on every request. Nothing on the demo site starts a run or calls a model.
 
-Built for the Vultr Agent Rush hackathon (November 2026), challenge 1, Blast Radius Zero. Demo video (4:52): [PQ-Proof-demo.mp4](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-demo.mp4) · slides: [PQ-Proof-slides.pdf](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-slides.pdf) · fixture repository: [g1mn/orders-edge](https://github.com/g1mn/orders-edge) · team: g1mn, solo builder.
+Built for the Vultr Agent Rush hackathon (November 2026), challenge 1, Blast Radius Zero. Demo video (4:54): [PQ-Proof-demo.mp4](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-demo.mp4) · slides: [PQ-Proof-slides.pdf](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-slides.pdf) · fixture repository: [g1mn/orders-edge](https://github.com/g1mn/orders-edge) · team: g1mn, solo builder.
 
 ## Architecture
 
@@ -27,14 +27,14 @@ browser --HTTPS--> nginx --> run viewer (Python, user pqweb): replay of publishe
 | Control plane, sandbox host, demo site | **Vultr Cloud Compute VX1** | Runs the agent's control plane, one Microsandbox microVM per step on its KVM, the egress sinkhole and DNS recorder, and the public demo site (nginx + the run viewer) | Plan `vx1-g-4c-16g-240s` (4 vCPU, 16 GB, 240 GB), region Seattle (`sea`), Ubuntu 24.04 LTS x64, `/dev/kvm` available |
 | The agent's model | **Vultr Serverless Inference** (`https://api.vultrinference.com/v1`, OpenAI-compatible) | Writes the migration plan through the `propose_plan` tool and the edits through `propose_edits`, reads raw build errors and tries again (up to 3 attempts) | `glm-5.3` only, tools without `tool_choice`, `reasoning_effort: low`, at most 8 requests per run; the key lives in `/etc/pqproof/inference.env` (root, 600) and reaches the control plane on stdin |
 
-The demo's newest run (`e2e-glm-7`, November 8, 2026) sent 3 requests to `glm-5.3` (12,140 input and 2,254 output tokens), and its receipt prices them at the public model list's rates ($0.75 and $3.00 per million input and output tokens) at $0.0159. Every run that reached the model passed, at $0.0138 to $0.0217 each (see End-to-end run). Success is never the model's call: the verdict comes from the probe's handshakes and exit codes.
+The demo's newest run (`e2e-glm-7`, November 8, 2026 KST) sent 3 requests to `glm-5.3` (12,140 input and 2,254 output tokens), and its receipt prices them at the public model list's rates ($0.75 and $3.00 per million input and output tokens) at $0.0159. Every glm-5.3 run that reached the model passed, at $0.0138 to $0.0217 each (see End-to-end run); one trial of another model as planner (deepseek-v4.1-flash-1017) had its plans refused by the checks. Success is never the model's call: the verdict comes from the probe's handshakes and exit codes.
 
 ## Public demo and deployment
 
 The demo site is read-only: it serves the published receipt of a recorded run and a replay built from that receipt alone. Live runs are not open to the public; the viewer's gate refuses them (`503`, "live runs are off"), and nginx answers anything but `GET` and `HEAD` with `403`.
 
 - **Viewer**: `deploy/pqproof-web.service` runs `python3 -m pqproof web` as `pqweb`, a system user with no shell, no key and no `kvm` group, bound to `127.0.0.1:8080`. systemd keeps `/etc/pqproof`, `/var/lib/pqproof` (the control plane's runs) and `/root` out of its view, lets it reach no address but localhost, and drops every capability (`systemd-analyze security`: 1.1, "OK"). It reads only `/srv/pqproof/runs`, a root-owned copy of the runs chosen for publication, each checked with `verify-receipt` before it is published.
-- **Front**: `deploy/nginx-demo.conf`, Ubuntu's nginx 1.24 with a Let's Encrypt certificate (http-01, renewed by certbot's timer), TLS 1.2 and 1.3, HSTS, per-address limits (10 requests per second with a burst of 40, 20 requests at once), 10 s header and body timeouts, 1 KB bodies. A request for any other host name gets no answer. The front itself speaks classical TLS: Ubuntu 24.04's OpenSSL 3.0 has no ML-KEM, and PQ-Proof proves hybrid handshakes inside the microVMs, not on its own front.
+- **Front**: `deploy/nginx-demo.conf`, Ubuntu's nginx 1.24 with a Let's Encrypt certificate (http-01, renewed by certbot's timer), TLS 1.2 and 1.3, HSTS, per-address limits (10 requests per second with a burst of 40, 20 requests at once), 10 s header and body timeouts, 1 KB bodies. A connection for any other name (TLS SNI) or for the bare IP address gets no answer. The front itself speaks classical TLS: Ubuntu 24.04's OpenSSL 3.0 has no ML-KEM, and PQ-Proof proves hybrid handshakes inside the microVMs, not on its own front.
 - **Firewall**: ufw allows 22, 80 and 443/tcp only, and at most 100 open connections to 80 and 443 from one IPv4 address (nginx's own limits count requests, so connections that never finish a request are capped here).
 
 To deploy it yourself on a VX1 instance with Ubuntu 24.04 (keys and secrets stay out of the repository):
@@ -43,13 +43,13 @@ To deploy it yourself on a VX1 instance with Ubuntu 24.04 (keys and secrets stay
 deploy/upload.sh -i ~/.ssh/KEY --fixture ../orders-edge --key ~/.config/pqproof/inference.env root@HOST
 ssh root@HOST bash /opt/pqproof/pq-proof/current/deploy/vx1-setup.sh     # updates, keys-only sshd, ufw, user pqproof, msb 0.7.13
 ssh root@HOST 'cd /opt/pqproof/pq-proof/current && runuser -u pqproof -- env -i HOME=/var/lib/pqproof \
-    PATH=/var/lib/pqproof/.microsandbox/bin:/usr/bin:/bin python3 e2e/orders_edge.py \
+    PATH=/var/lib/pqproof/.local/bin:/var/lib/pqproof/.microsandbox/bin:/usr/bin:/bin python3 e2e/orders_edge.py \
     --repo /opt/pqproof/orders-edge/current --approve --model glm-5.3 --key-file /dev/stdin \
     --out /var/lib/pqproof/runs/RUN_ID < /etc/pqproof/inference.env'   # one real run, about 2 minutes
 ssh root@HOST bash /opt/pqproof/pq-proof/current/deploy/demo-site.sh DOMAIN RUN_ID   # viewer, nginx, certificate, ufw 80/443
 ```
 
-`upload.sh` streams each repository's committed `HEAD` with `git archive` over SSH (no Git credentials go to the host) and copies the inference key file with `scp`. `demo-site.sh` can run again; it changes nothing that is already in place. The demo uses `149-28-14-122.sslip.io`, a name that resolves to the host's address.
+`upload.sh` streams each repository's committed `HEAD` with `git archive` over SSH (no Git credentials go to the host) and copies the inference key file with `scp`. `demo-site.sh` is safe to run again: it re-publishes the listed runs, restarts the viewer and reloads nginx, and leaves the certificate and firewall rules as they are. The demo uses `149-28-14-122.sslip.io`, a name that resolves to the host's address.
 
 ## Model
 
@@ -110,7 +110,7 @@ Measured on an M-series Mac with msb 0.7.13 (November 4, 2026), 75 s in all:
 
 Every `make`, `go` and `nginx` command ran inside `msb exec` (0 on the host), the planted test hook's `CANARY-0001` landed in the sinkhole during `make test`, every microVM was removed, and the CBOM after the patch has no row that blocks hybrid key exchange (the RS256 JWT row stays: signatures are out of scope). The same probe binary built twice gave the same SHA-256.
 
-On the VX1 host (x86_64) the same scripted run passed in 120.5 s. With `--model glm-5.3` writing the plan and the edits, every run that reached the model passed: 97.3 s, 116.1 s, 106.7 s, 130.1 s and 100.2 s on November 4 and 5, for $0.0217, $0.0197, $0.0138, $0.0155 and $0.0144 in tokens ([docs/kickoff-spike.md](docs/kickoff-spike.md) has the first two), and 78.2 s for $0.0159 on November 8 (`e2e-glm-7`, on the demo). `e2e-glm-6` wrote a format 2 hashed receipt (41 artifacts, 288 KB) naming `https://github.com/g1mn/orders-edge` at commit `7c7e501`, which `verify-receipt` accepted on the VX1 host and again on a Mac (48 checks); `e2e-glm-7`'s passed 46 checks on a Mac.
+On the VX1 host (x86_64) the same scripted run passed in 120.5 s. With `--model glm-5.3` writing the plan and the edits, every run that reached the model passed: 97.3 s, 116.1 s, 106.7 s, 130.1 s and 100.2 s on November 4 and 5, for $0.0217, $0.0197, $0.0138, $0.0155 and $0.0144 in tokens ([docs/kickoff-spike.md](docs/kickoff-spike.md) has the first two), and 78.2 s for $0.0159 on November 8 KST (`e2e-glm-7`, on the demo). `e2e-glm-6` wrote a format 2 hashed receipt (41 artifacts, 288 KB) naming `https://github.com/g1mn/orders-edge` at commit `7c7e501`, which `verify-receipt` accepted on the VX1 host and again on a Mac (48 checks); `e2e-glm-7`'s passed 46 checks on a Mac.
 
 `--model-file e2e/orders-edge-injected-model.json` runs a scripted stand-in that follows the README's injection: its attempt 1 makes the right key-exchange edits and also sets `InsecureSkipVerify: true`, which the TLS-weakening check refuses before anything is built; attempt 2 is the same patch without it. On the VX1 host it passed in 84.8 s (`e2e-injection-scripted-1`, on the demo).
 
