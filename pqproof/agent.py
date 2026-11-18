@@ -20,8 +20,8 @@ block and pose as the control plane.
 A proposed plan must pass compile_allowlist (images get a placeholder digest until
 images.resolve pins them), must list every image the Dockerfile names, and its images must
 resolve; a refusal goes back to the model with the reason, at most MAX_PLAN_ATTEMPTS times.
-Resolving pulls each image on the host (`msb pull`) before a human approves, so that the approver
-sees digests: a plan may list at most IMAGES_PER_FROM images per FROM line of the Dockerfile, checked
+Resolving pulls each image on the host (`msb pull`) before the plan is approved, so that whoever
+approves it sees digests: a plan may list at most IMAGES_PER_FROM images per FROM line of the Dockerfile, checked
 before anything is pulled, and each image is resolved once per run. A run pulls at most that many
 images times MAX_PLAN_ATTEMPTS.
 """

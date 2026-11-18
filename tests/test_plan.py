@@ -1,9 +1,19 @@
-"""Plan schema and allowlist compiler: table tests."""
+"""Plan schema and allowlist compiler: table tests. Approval of a plan (plan.approve)."""
 import copy
+import hashlib
+import json
+import os
+import pathlib
+import select
+import subprocess
+import sys
+import time
 import unittest
 
-from pqproof.plan import PLAN_SCHEMA, PlanError, compile_allowlist
+from pqproof.plan import PLAN_SCHEMA, NotApproved, PlanError, approve, ask_tty, compile_allowlist, plan_json, plan_sha256
 from pqproof.plan import PROBE_ADDRS
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 DIGEST = "a" * 64
 PLAN = {
@@ -163,7 +173,7 @@ class ApprovalText(unittest.TestCase):
                         compile_allowlist(plan_with(edits=[{"path": "nginx/nginx.conf", "why": bad}]))
         with self.assertRaises(PlanError):
             compile_allowlist(plan_with(edits=[{"path": "nginx/nginx.conf", "why": "w" * 501}]))
-        ok = "Move to X25519MLKEM768 (hybrid ML-KEM) — keep P-256; café, Zürich, naïve."
+        ok = "Move to X25519MLKEM768 (hybrid ML-KEM) \u2014 keep P-256; café, Zürich, naïve."  # an em dash is printable
         compile_allowlist(plan_with(summary=ok, edits=[{"path": "nginx/nginx.conf", "why": ok}]))
 
 
@@ -272,6 +282,119 @@ class Reject(unittest.TestCase):
         with self.assertRaises(PlanError):
             compile_allowlist(["make", "test"])
 
+
+class Approve(unittest.TestCase):
+    """README said "a human approves", but the recorded runs passed --approve, and with the key on
+    standard input (--key-file /dev/stdin) input() saw /dev/null and the prompt always said no."""
+
+    def never_asked(self, question):
+        raise AssertionError("asked although nothing was to be asked")
+
+    def test_the_plan_is_named_by_the_sha256_of_its_plan_json(self):
+        self.assertEqual(plan_json(PLAN), (json.dumps(PLAN, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode())
+        self.assertEqual(plan_sha256(PLAN), hashlib.sha256(plan_json(PLAN)).hexdigest())
+        self.assertNotEqual(plan_sha256(plan_with(summary="another summary")), plan_sha256(PLAN))
+
+    def test_three_modes(self):
+        digest = plan_sha256(PLAN)
+        flag = approve(PLAN, flag=True, ask=self.never_asked, now=lambda: 5.0)
+        self.assertEqual(flag, {"mode": "flag", "approver": None, "at": 5.0, "plan_sha256": digest})
+        by_hash = approve(PLAN, plan_hash=" " + digest.upper() + "\n", approver="alice", ask=self.never_asked)
+        self.assertEqual((by_hash["mode"], by_hash["approver"], by_hash["plan_sha256"]), ("plan-hash", "alice", digest))
+        prompt = approve(PLAN, approver="J. Doe", ask=lambda q: "Y\n")
+        self.assertEqual((prompt["mode"], prompt["approver"]), ("prompt", "J. Doe"))
+        self.assertIsNone(approve(PLAN, ask=lambda q: "y\n")["approver"])  # no name given: null
+
+    def test_no_is_the_default_answer(self):
+        for answer in ("", "\n", "n\n", "yes\n", "no"):
+            with self.subTest(answer=answer):
+                with self.assertRaises(NotApproved):
+                    approve(PLAN, ask=lambda q: answer)
+
+    def test_a_plan_hash_approves_that_plan_only(self):
+        read = plan_sha256(PLAN)
+        with self.assertRaises(NotApproved) as cm:
+            approve(plan_with(commands=PLAN["commands"] + [["go", "vet", "./..."]]), plan_hash=read, ask=self.never_asked)
+        self.assertIn(read, str(cm.exception))
+        self.assertIn("not this plan's SHA-256", str(cm.exception))
+
+    def test_an_unattended_approval_names_no_one(self):
+        for kwargs in ({"approver": "alice"}, {"plan_hash": plan_sha256(PLAN)}):
+            with self.subTest(**kwargs):
+                with self.assertRaises(NotApproved):
+                    approve(PLAN, flag=True, ask=self.never_asked, **kwargs)
+        # \u3164 (Hangul filler) is \w to Python, yet shows as nothing; a JSON Schema validator's \w is ASCII
+        for bad in ("a\nb", "eve\n", "x" * 65, "", " lead", "<b>", "a\x1b[2Kb", "\u3164", "Jos\u00e9"):
+            with self.subTest(approver=bad):
+                with self.assertRaises(NotApproved):
+                    approve(PLAN, approver=bad, ask=lambda q: "y\n")
+
+    def test_without_a_terminal_the_answer_is_no_with_a_reason(self):
+        with self.assertRaises(NotApproved) as cm:
+            ask_tty("Approve plan X? [y/N] ", tty=os.path.join(os.sep, "nonexistent", "tty"))
+        self.assertIn("no terminal to ask on", str(cm.exception))
+        self.assertIn("--approve-plan", str(cm.exception))
+        # a process with no controlling terminal: /dev/tty itself cannot be opened
+        code = "from pqproof.plan import ask_tty, NotApproved\ntry:\n    ask_tty('q? ')\nexcept NotApproved as e:\n    print(e)"
+        r = subprocess.run([sys.executable, "-c", code], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           start_new_session=True, env=dict(os.environ, PYTHONPATH=str(ROOT)), timeout=60)
+        self.assertIn("no terminal to ask on (/dev/tty", r.stdout, r.stderr)
+
+    def converse(self, code, *, typed_ahead=b"", answer=b"y\n", stdin=""):
+        """Run code with a pseudo-terminal's path as sys.argv[1], answer once its question is on the
+        terminal (or first type typed_ahead, before the program even starts) and return (what the
+        terminal showed, the program's stdout)."""
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        if typed_ahead:
+            os.write(master, typed_ahead)
+        p = subprocess.Popen([sys.executable, "-c", code, os.ttyname(slave)], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             env=dict(os.environ, PYTHONPATH=str(ROOT)))
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        p.stdin.write(stdin)
+        p.stdin.close()
+        shown, deadline = b"", time.monotonic() + 60
+        while b"[y/N] " not in shown:
+            ready, _, _ = select.select([master], [], [], max(0.0, deadline - time.monotonic()))
+            if not ready:
+                self.fail(f"no question on the terminal: {shown!r}")
+            shown += os.read(master, 4096)
+        os.write(master, answer)
+        out, err = p.communicate(timeout=60)
+        self.assertEqual(p.returncode, 0, err)
+        return shown, out
+
+    def test_the_answer_comes_from_the_terminal_when_the_key_came_on_standard_input(self):
+        # the VX1 command: --key-file /dev/stdin < inference.env. key_from_file leaves fd 0 on /dev/null;
+        # the question goes to the terminal (here a pseudo-terminal), with the plan's SHA-256, and so does
+        # the answer, typed once the question is there
+        code = ("import sys\nfrom pqproof.inference import key_from_file\nfrom pqproof.plan import approve, ask_tty\n"
+                "key_from_file('/dev/stdin')\nprint(sys.stdin.read() == '')\n"
+                "print(approve({'v': 1}, ask=lambda q: ask_tty(q, sys.argv[1]))['mode'])")
+        shown, out = self.converse(code, stdin="VULTR_INFERENCE_API_KEY=k\n")
+        self.assertEqual(out.split(), ["True", "prompt"])
+        self.assertIn(f"Approve plan {plan_sha256({'v': 1})}? [y/N] ".encode(), shown)
+
+    def test_a_key_pressed_before_the_question_is_not_an_answer(self):
+        # a y pressed while the model was still writing the plan, or the next line of a paste, sits in
+        # the terminal's input queue; it is discarded, and the empty answer given to the question is no
+        code = ("import sys\nfrom pqproof.plan import NotApproved, approve, ask_tty\n"
+                "try:\n    print(approve({'v': 1}, ask=lambda q: ask_tty(q, sys.argv[1]))['mode'])\n"
+                "except NotApproved as e:\n    print('not approved:', e)")
+        _, out = self.converse(code, typed_ahead=b"y\n", answer=b"\n")
+        self.assertEqual(out, "not approved: the answer was not y\n")
+        _, out = self.converse(code, typed_ahead=b"n\n", answer=b"y\n")  # and an answer typed after it counts
+        self.assertEqual(out, "prompt\n")
+
+    def test_the_plan_goes_to_the_terminal_before_the_question(self):
+        # e2e/orders_edge.py passes the plan as preface when standard output is not the terminal (> run.log)
+        code = ("import sys\nfrom pqproof.plan import ask_tty\n"
+                "print(repr(ask_tty('Approve plan X? [y/N] ', sys.argv[1], preface='Plan: one line\\n  plan sha256 X\\n')))")
+        shown, out = self.converse(code)
+        self.assertRegex(shown, rb"Plan: one line\r?\n  plan sha256 X\r?\nApprove plan X\? \[y/N\] $")
+        self.assertEqual(out.strip(), repr("y\n"))
 
 if __name__ == "__main__":
     unittest.main()

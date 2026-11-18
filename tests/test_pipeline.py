@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -599,6 +600,13 @@ class EndToEnd(unittest.TestCase):
             got = json.loads(pathlib.Path(rdir, "receipt.json").read_text())
             for name in ("receipt.json", "receipt.html"):
                 self.assertNotIn("signed", pathlib.Path(rdir, name).read_text().lower(), name)
+            page = pathlib.Path(rdir, "receipt.html").read_text()
+        # --approve: the receipt and its page say that nobody reviewed the plan
+        self.assertEqual((got["approval"]["mode"], got["approval"]["approver"]), ("flag", None))
+        self.assertEqual(got["approval"]["plan_sha256"], got["plan"]["file_sha256"])
+        self.assertIn("approval: unattended approval (--approve)", v.stdout)
+        self.assertEqual(page.count("Unattended approval (--approve)"), 2)
+        self.assertNotIn("Approved plan", page)
         self.assertTrue(report["checks"]["receipt_verified"])
         self.assertEqual(got["receipt_id"], report["receipt"]["receipt_id"])
         self.assertEqual(got["verdict"], "pass")
@@ -615,6 +623,25 @@ class EndToEnd(unittest.TestCase):
         self.assertTrue(report["checks"]["targets_are_orders_edge_ports"])
         for step in [report["baseline"]] + report["attempts"][-1:]:
             self.assertEqual(sorted(step["detail"]["verdict"]["targets"]), ["127.0.0.1:8443", "127.0.0.1:9443"])
+
+    def test_no_approval_stops_before_any_microvm(self):
+        # no terminal (a new session, standard input /dev/null), then a plan hash that is not this plan's:
+        # both stop at the approval with the reason, after the plan and its SHA-256 are printed
+        def run(*extra):
+            out = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, out)
+            return subprocess.run([sys.executable, "-I", str(ROOT / "e2e" / "orders_edge.py"), "--repo",
+                                   os.environ["PQPROOF_E2E_REPO"], "--out", os.path.join(out, "run"), *extra],
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=600, start_new_session=True)
+        asked = run()
+        self.assertEqual(asked.returncode, 2, asked.stdout[-2000:] + asked.stderr[-2000:])
+        self.assertIn("not approved: no terminal to ask on", asked.stdout)
+        digest = re.search(r"plan sha256 ([0-9a-f]{64})", asked.stdout)[1]
+        wrong = run("--approve-plan", "0" * 64)
+        self.assertEqual(wrong.returncode, 2)
+        self.assertIn(f"is not this plan's SHA-256 ({digest})", wrong.stdout)
+        for r in (asked, wrong):
+            self.assertNotIn("probe:", r.stdout)  # the probe build, the first microVM, never started
 
 
 if __name__ == "__main__":

@@ -8,9 +8,17 @@ on the diff, not for this module.
 Paths are checked as strings. A symlink committed in the target repo can still point an allowed
 path outside the snapshot, so the code that applies edits has to resolve each path and refuse
 anything that leaves the snapshot root (or open it with O_NOFOLLOW).
+
+approve() is the approval itself: a person at the terminal, a plan hash given on a second run, or
+--approve without anyone looking. Its record goes into the receipt.
 """
+import hashlib
+import json
+import os
 import posixpath
 import re
+import termios
+import time
 import unicodedata
 from dataclasses import dataclass
 
@@ -291,3 +299,82 @@ def compile_allowlist(plan):
         raise PlanError("\n".join(dict.fromkeys(problems)))
     return Allowlist(commands=frozenset(commands), paths=frozenset(paths), images=frozenset(images),
                      targets=frozenset(targets))
+
+
+# ---------------------------------------------------------------------------------------------
+# Approval. mode: "prompt" (y typed at the terminal after the question), "plan-hash" (a second run
+# with --approve-plan and the SHA-256 a first run printed with the plan), "flag" (--approve: nobody
+# looked). The mode says which path the run took, not that a person read the plan, and the approver
+# is the name given, unchecked. The record names the plan by the SHA-256 of plan.json as the receipt
+# stores it.
+APPROVAL_MODES = ("prompt", "flag", "plan-hash")
+# a name a person gives: one short line of ASCII. The class is spelled out rather than \w, which is
+# Unicode in Python and ASCII in a JSON Schema (ECMA-262) validator, so both read the receipt pattern alike
+APPROVER = re.compile(r"(?=.{1,64}$)[A-Za-z0-9_.@+-]+(?: [A-Za-z0-9_.@+-]+)*")
+PLAN_SHA = re.compile(r"[0-9a-f]{64}")
+TTY = "/dev/tty"
+
+
+class NotApproved(Exception):
+    pass
+
+
+def plan_json(plan):
+    """plan.json's bytes, exactly as the receipt writes the file (receipt.build)."""
+    return (json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def plan_sha256(plan):
+    return hashlib.sha256(plan_json(plan)).hexdigest()
+
+
+def ask_tty(question, tty=TTY, preface=""):
+    """One answer typed at the terminal after the question is on it. Standard input is not read: with
+    --key-file /dev/stdin it was the key file and is /dev/null by now (inference.key_from_file), so
+    input() would see no answer. Whatever was typed before the question (a y pressed while the model
+    was still writing the plan, the next line of a paste) is discarded, so only an answer to this
+    question counts. preface goes to the terminal first: the plan, when standard output is not the
+    terminal (a run with > run.log), so that whoever answers sees what they approve. Raises
+    NotApproved when there is no terminal to ask on."""
+    try:
+        fd = os.open(tty, os.O_RDWR | os.O_NOCTTY)
+    except OSError as e:
+        raise NotApproved(f"no terminal to ask on ({tty}: {e.strerror or e}); run it from a terminal "
+                          f"(ssh -t), or read the plan above and run again with --approve-plan and its SHA-256") from None
+    try:
+        _write_all(fd, preface.encode("utf-8"))
+        termios.tcflush(fd, termios.TCIFLUSH)  # typed before the question: not an answer to it
+        _write_all(fd, question.encode("utf-8"))
+        return os.read(fd, 4096).decode("utf-8", "replace")  # a terminal returns one line per read
+    except termios.error as e:
+        raise NotApproved(f"{tty} is not a terminal ({e})") from None
+    finally:
+        os.close(fd)
+
+
+def _write_all(fd, data):
+    while data:
+        data = data[os.write(fd, data):]
+
+
+def approve(plan, flag=False, plan_hash=None, approver=None, ask=ask_tty, now=time.time):
+    """The approval record of plan ({mode, approver, at, plan_sha256}), or NotApproved. With
+    plan_hash, the plan made on this run must hash to it: a plan that changed since it was read is
+    not approved. An unattended approval names no approver."""
+    digest = plan_sha256(plan)
+    if approver is not None and not APPROVER.fullmatch(approver):
+        raise NotApproved("an approver is a name of at most 64 ASCII letters, digits, spaces and . _ @ + -")
+    if flag:
+        if plan_hash is not None or approver is not None:
+            raise NotApproved("--approve approves without anyone looking: it takes no plan hash and no approver")
+        mode = "flag"
+    elif plan_hash is not None:
+        if plan_hash.strip().lower() != digest:
+            raise NotApproved(f"--approve-plan {plan_hash.strip()} is not this plan's SHA-256 ({digest}): "
+                              f"the plan is not the one that was read")
+        mode = "plan-hash"
+    else:
+        if ask(f"Approve plan {digest}? [y/N] ").strip().lower() != "y":  # the hash printed with the plan
+            raise NotApproved("the answer was not y")
+        mode = "prompt"
+    return {"mode": mode, "approver": approver, "at": now(), "plan_sha256": digest}

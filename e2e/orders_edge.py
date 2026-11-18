@@ -1,6 +1,6 @@
 """End-to-end run on the orders-edge fixture, with real microVMs.
 
-    python3 e2e/orders_edge.py --repo ../orders-edge [--out runs/e2e] [--approve]
+    python3 e2e/orders_edge.py --repo ../orders-edge [--out runs/e2e] [--approve | --approve-plan SHA256] [--approver NAME]
     python3 e2e/orders_edge.py --repo ../orders-edge --approve --model glm-5.3 --key-file /dev/stdin < inference.env
 
 --model scripted (the default, for tests and CI) uses e2e/orders-edge-scripted-model.json: a plan
@@ -13,7 +13,11 @@ list's rates, and every HTTP request sent (inference.MAX_REQUESTS at most), answ
 1. Snapshot: `git clone --no-recurse-submodules`, then a copy without .git (host: git only).
 2. CBOM before (reads files only).
 3. Plan (scripted, or from the model and checked); its image tags are resolved to
-   name:tag@sha256:<platform digest> with msb pull + msb image inspect and shown for approval.
+   name:tag@sha256:<platform digest> with msb pull + msb image inspect and shown for approval with
+   the plan's SHA-256 (plan.approve): asked at the terminal (/dev/tty, so a key on standard input
+   does not get in the way; keys pressed before the question are discarded, and the plan is shown
+   there too when standard output is a file), or --approve-plan SHA256 on a second run, or
+   --approve, which approves without anyone looking. The receipt records which.
 4. tls_probe built inside a microVM.
 5. Baseline: build and prove the unmodified snapshot. Expected: both probe controls hold, hybrid
    fails on every target, the classical client still connects.
@@ -50,7 +54,7 @@ from pqproof.images import GOLANG, NGINX_BOOKWORM, NGINX_TRIXIE, resolve  # noqa
 from pqproof.inference import Client, InferenceError, fetch_rates, key_from_file  # noqa: E402
 from pqproof.loop import InferenceModel, ScriptedModel, run_loop  # noqa: E402
 from pqproof.pipeline import Pipeline, _read_text, guest_commands, host_build_count, session_record, tls_layout  # noqa: E402
-from pqproof.plan import PlanError, built_programs, compile_allowlist  # noqa: E402
+from pqproof.plan import APPROVER, PLAN_SHA, NotApproved, PlanError, approve, ask_tty, built_programs, compile_allowlist, plan_sha256  # noqa: E402
 from pqproof.sandbox import LABEL, MSB, Runner, run_cmd  # noqa: E402
 from pqproof.scan import scan  # noqa: E402
 
@@ -148,7 +152,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
     ap.add_argument("--out", default=str(ROOT / "runs" / time.strftime("e2e-%Y%m%dT%H%M%S")))
-    ap.add_argument("--approve", action="store_true", help="approve the plan without asking")
+    how = ap.add_mutually_exclusive_group()
+    how.add_argument("--approve", action="store_true",
+                     help="approve the plan without asking (unattended: the receipt says so)")
+    how.add_argument("--approve-plan", metavar="SHA256",
+                     help="approve the plan only if its SHA-256, printed with the plan by an earlier run, is this one")
+    ap.add_argument("--approver", metavar="NAME",
+                    help="who approves, recorded as given and not checked (a local account name, say); not with --approve")
     ap.add_argument("--model", default="scripted",
                     help="'scripted' (default: fixed edits, no inference call) or a Vultr Serverless Inference model id")
     ap.add_argument("--model-file", default=str(MODEL_FILE),
@@ -156,6 +166,12 @@ def main():
     ap.add_argument("--key-file", help="env file with VULTR_INFERENCE_API_KEY=... (/dev/stdin works); "
                                        "default: the VULTR_INFERENCE_API_KEY environment variable")
     args = ap.parse_args()
+    if args.approve and args.approver is not None:
+        ap.error("--approve approves without anyone looking, so it takes no --approver")
+    if args.approver is not None and not APPROVER.fullmatch(args.approver):
+        ap.error("--approver: at most 64 ASCII letters, digits, spaces and . _ @ + -")
+    if args.approve_plan is not None and not PLAN_SHA.fullmatch(args.approve_plan.strip().lower()):
+        ap.error("--approve-plan takes the plan's SHA-256: 64 hexadecimal digits")
     out = pathlib.Path(args.out)
     out.mkdir(parents=True)
     log_dir = str(out / "logs")
@@ -223,23 +239,26 @@ def main():
         timings["plan_s"] = round(time.time() - t, 1)
         phases.end()
         phases.start("approval")
-        print("Plan:", plan["summary"])
-        for img, r in zip(pins, resolved):
-            print(f"  image {img} -> {r.pinned} (linux/{r.architecture})")
-        for e in plan["edits"]:
-            print(f"  edit  {e['path']}: {e['why']}")
-        for c in plan["commands"]:
-            print(f"  run   {' '.join(c)}")
-        for tg in plan["targets"]:
-            print(f"  probe {tg['addr']} (must be served by {tg['server']})")
-        try:  # with the key on standard input, fd 0 is /dev/null by now: no answer means no
-            answer = "y" if args.approve else input("Approve this plan? [y/N] ")
-        except EOFError:
-            answer = ""
-        if answer.strip().lower() != "y":
-            print("not approved")
+        shown = [f"Plan: {plan['summary']}"]
+        shown += [f"  image {img} -> {r.pinned} (linux/{r.architecture})" for img, r in zip(pins, resolved)]
+        shown += [f"  edit  {e['path']}: {e['why']}" for e in plan["edits"]]
+        shown += [f"  run   {' '.join(c)}" for c in plan["commands"]]
+        shown += [f"  probe {tg['addr']} (must be served by {tg['server']})" for tg in plan["targets"]]
+        shown.append(f"  plan sha256 {plan_sha256(plan)} (--approve-plan with this approves this plan, and only this one)")
+        print("\n".join(shown))
+        sys.stdout.flush()  # the plan is on the screen before the question
+        # asked on /dev/tty: with the key on standard input, fd 0 is /dev/null by now. With standard
+        # output in a file (> run.log) the terminal would show the question alone, so the plan goes there too
+        preface = "" if os.isatty(1) else "\n".join(shown) + "\n"
+        try:
+            report["approval"] = approve(plan, flag=args.approve, plan_hash=args.approve_plan, approver=args.approver,
+                                         ask=lambda q: ask_tty(q, preface=preface))
+        except NotApproved as e:
+            print(f"not approved: {e}")
             stop_reaper.set()
             return 2
+        print(f"approval: {report['approval']['mode']}" + ("" if args.approve else
+                                                           f", by {args.approver or '(no name given)'}"))
         phases.end()
         report["plan"], report["images"] = plan, [vars(r) for r in resolved]
         allow = compile_allowlist(plan)

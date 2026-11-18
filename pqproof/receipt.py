@@ -15,7 +15,13 @@ whitespace, UTF-8, numbers as ECMAScript writes them), so one hash covers the wh
 through the manifest, every artifact, and a verifier in another language gets the same id.
 `python3 -m pqproof verify-receipt DIR` recomputes all of it, checks receipt.json against SCHEMA,
 checks that the verdict and the counts agree with the proofs, attempts and microVMs they summarize,
-and renders receipt.html again to compare it with the file.
+checks that the approval names plan.json by its SHA-256, and renders receipt.html again to compare it
+with the file.
+
+approval says how the plan was approved (plan.approve): at the terminal, by its hash on a second run,
+or unattended with --approve. Receipts written before it was recorded have no approval field; they
+verify as before, with their receipt_id and receipt.html unchanged, and verify-receipt notes
+"approval: not recorded (legacy)".
 
 This is a hashed receipt, not proof of who wrote it: anyone can change a file and write new
 hashes. The id is worth something only when it is compared with an id taken from a source the
@@ -33,7 +39,7 @@ import time
 
 from . import prove
 from .loop import _open_nofollow
-from .plan import clean_text
+from .plan import APPROVAL_MODES, APPROVER, clean_text, plan_json
 
 FORMAT = "pq-proof hashed receipt 2"  # 2: repo url/path/commit/tree, RFC 8785 numbers, consistency checks
 NOTE = ("Hashed receipt: receipt_id is the SHA-256 of this JSON without receipt_id in RFC 8785 canonical form (sorted "
@@ -89,7 +95,9 @@ SANDBOX = strict(id=STR, step=STR, image=STR, image_digest=STR, platform_digest=
                  network=STRS, msb_commands=INT, execs={"type": "array", "items": EXEC},
                  egress=strict(reached_sinkhole={"type": "array", "items": EVENT}, reached_sinkhole_not_kept=INT,
                                dropped_by_policy={"const": DROPPED}))
-SCHEMA = strict(
+APPROVAL = strict(mode={"enum": list(APPROVAL_MODES)}, approver={"type": ["string", "null"], "pattern": f"^{APPROVER.pattern}$"},
+                  at=TIME, plan_sha256=SHA)
+_FIELDS = dict(
     format={"const": FORMAT}, receipt_id=SHA, note={"const": NOTE}, verdict={"enum": ["pass", "fail"]},
     repo=strict(url={"type": ["string", "null"], "pattern": "^" + PUBLIC_URL.pattern + "$"}, path=STR, commit=GIT_ID,
                 tree=GIT_ID),
@@ -118,7 +126,11 @@ SCHEMA = strict(
                  cost_usd={"type": ["number", "null"]}, requests=PATH_OR_NULL, requests_sha256=SHA_OR_NULL),
     host_commands=strict(file=PATH, file_sha256=SHA, count=INT),
     artifacts={"type": "array", "minItems": 1, "items": strict(path=PATH, bytes=INT, sha256=SHA)},
+    approval=APPROVAL,
 )
+# approval is the one optional field: a receipt written before it existed has none, and its receipt_id
+# stays the same, because the canonical form never holds a field the receipt does not have
+SCHEMA = obj(set(_FIELDS) - {"approval"}, **_FIELDS)
 
 TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "array": list, "object": dict,
          "null": type(None)}
@@ -409,7 +421,7 @@ def build(report, log_dir, out):
     def sessions(detail):
         return {k: by_detail[id(detail[k])] for k in ("build", "prove") if k in detail}
 
-    plan_file, plan_sha = art.add_json("plan.json", report["plan"])
+    plan_file, plan_sha = art.add("plan.json", plan_json(report["plan"]))  # the bytes an approval hashes
     before_file, before_sha = art.add_json("cbom-before.json", report["cbom_before"])
     after = report.get("cbom_after")
     after_file, after_sha = art.add_json("cbom-after.json", after) if after is not None else (None, None)
@@ -488,6 +500,10 @@ def build(report, log_dir, out):
         "patch": patch, "attempts": attempts, "proofs": proofs, "not_fixed": not_fixed, "containment": containment,
         "model": model, "host_commands": {"file": hc_file, "file_sha256": hc_sha, "count": len(report.get("host_commands", []))},
     }
+    a = report.get("approval")
+    if a:  # verify() checks plan_sha256 against plan.json
+        receipt["approval"] = {"mode": a["mode"], "approver": a.get("approver"), "at": iso(a["at"]),
+                               "plan_sha256": a["plan_sha256"]}
     receipt["artifacts"] = sorted(art.items.values(), key=lambda i: i["path"])
     receipt["receipt_id"] = compute_id(receipt)
     problems = validate(receipt, SCHEMA)
@@ -562,9 +578,19 @@ def consistency(r):
     return out
 
 
-def verify(root):
+def approval_text(a):
+    """One line on how the plan was approved, for verify-receipt."""
+    who = a["approver"] or "(no name given)"
+    return {"flag": f"unattended approval (--approve) at {a['at']}",
+            "prompt": f"approved at the terminal by {who} at {a['at']}",
+            "plan-hash": f"approved with --approve-plan by {who} at {a['at']}"}[a["mode"]]
+
+
+def verify(root, notes=None):
     """[(ok, what)] for a receipt directory: schema, receipt_id, every artifact's bytes and SHA-256,
-    no unlisted file, every *_sha256 field, the inline CBOM against its files, receipt.html."""
+    no unlisted file, every *_sha256 field, the approval's plan hash, the inline CBOM against its
+    files, receipt.html. A receipt without approval (written before it was recorded) gets no check
+    for it, so it passes as it did; notes, a list when given, receives "approval: not recorded (legacy)"."""
     out = []
     try:
         receipt = json.loads(_read_nofollow(root, "receipt.json").decode("utf-8"))
@@ -603,6 +629,23 @@ def verify(root):
     problems = consistency(receipt)
     out.append((not problems, "the verdict and the counts agree with the proofs, attempts and microVMs" if not problems
                 else "the verdict or the counts disagree with the record:\n  " + "\n  ".join(problems[:20])))
+    a, plan_path = receipt.get("approval"), receipt["plan"]["file"]
+    if a is None:
+        if notes is not None:
+            notes.append("approval: not recorded (legacy)")
+    elif plan_path in listed:
+        digest = hashlib.sha256(_read_nofollow(root, plan_path)).hexdigest()
+        if digest != a["plan_sha256"]:
+            out.append((False, f"approval: plan_sha256 {a['plan_sha256']} is not the SHA-256 of {plan_path} ({digest})"))
+        elif a["mode"] == "flag" and a["approver"] is not None:
+            out.append((False, f"approval: unattended (--approve), yet it names an approver ({a['approver']!r})"))
+        elif a["approver"] is not None and not APPROVER.fullmatch(a["approver"]):
+            # the schema check uses re.search("^...$"), where $ also matches before a final newline
+            out.append((False, f"approval: approver {a['approver']!r} is not one short line PQ-Proof would record"))
+        else:
+            out.append((True, f"approval: {approval_text(a)}, of {plan_path} (sha256 {digest})"))
+    else:
+        out.append((False, f"approval: {plan_path} is not a readable artifact, so its SHA-256 cannot be compared"))
     for side in ("before", "after"):
         path = receipt["cbom"][f"{side}_file"]
         if path in listed:
@@ -610,7 +653,8 @@ def verify(root):
             out.append((same, f"CBOM {side}: rows match {path}" if same else f"CBOM {side}: rows differ from {path}"))
     try:
         page = _read_nofollow(root, "receipt.html").decode("utf-8")
-        same = page == render_html(receipt)
+        # a receipt without approval may carry the page its own version wrote, which said "Approved plan"
+        same = page == render_html(receipt) or ("approval" not in receipt and page == render_html(receipt, legacy_page=True))
         out.append((same, "receipt.html is this receipt" if same else "receipt.html differs from this receipt"))
     except (OSError, ValueError) as e:
         out.append((False, f"receipt.html cannot be read: {e}"))
@@ -648,6 +692,10 @@ overflow-x:auto;white-space:pre-wrap;word-break:break-all;font-size:12.5px}
 a{color:var(--accent)}button{background:var(--panel);color:var(--text);border:1px solid var(--line);
 border-radius:8px;padding:6px 12px;font:inherit;cursor:pointer}
 .nowrap{white-space:nowrap}"""
+# Added for the approval line. Pages of receipts without approval, as their own version wrote them,
+# have STYLE alone (render_html legacy_page).
+APPROVAL_STYLE = """
+.approval{font-size:14px;font-weight:600}.warn{color:var(--warn);font-weight:600}"""
 
 
 def _e(value):
@@ -681,16 +729,36 @@ def _cbom_rows(rows):
                  r["blocks_hybrid"]], "yes" if r["auto_fix"] else "no (reported only)"] for r in rows or []]
 
 
-def render_html(r):
+def _approval(r):
+    """(class, label, what it means) for the receipt's approval, as HTML. An unattended approval is
+    never called approved by anyone."""
+    a = r.get("approval")
+    if a is None:
+        return "muted", "approval not recorded", "this receipt was written before PQ-Proof recorded how a plan was approved"
+    if a["mode"] == "flag":
+        return "warn", "Unattended approval (--approve)", "nobody reviewed the plan before it ran"
+    how = ("answered y at the terminal" if a["mode"] == "prompt" else
+           "approved with --approve-plan and the SHA-256 printed with this plan")
+    return ("ok", f'Approved by {_e(a["approver"] or "(no name given)")} at <span class="nowrap">{_e(a["at"])}</span>',
+            how + ("; the name is as given with --approver, not checked" if a["approver"] else ""))
+
+
+def render_html(r, legacy_page=False):
     """receipt.html for a receipt (dict). Everything taken from the receipt is escaped; the page
-    loads nothing and links only to its own artifacts."""
+    loads nothing and links only to its own artifacts. legacy_page: the page as the version before
+    approval was recorded wrote it, for a receipt without approval (verify accepts either)."""
     c, m = r["containment"], r["model"]
     verdict = f'<span class="badge {r["verdict"]}">{_e(r["verdict"].upper())}</span>'
+    cls, label, meaning = _approval(r)
+    style = STYLE if legacy_page else STYLE + APPROVAL_STYLE
+    approval = "" if legacy_page else f' <span class="approval {cls}">{label}</span>'
+    plan_head = ('<div class="muted">Approved plan</div>' if legacy_page else
+                 f'<div class="muted">Plan</div><b class="{cls}">{label}</b><br><span class="muted">{_e(meaning)}</span><br>')
     parts = [f"""<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src {SCRIPT_CSP}; img-src 'none'; base-uri 'none'; form-action 'none'">
-<title>PQ-Proof receipt</title><style>{STYLE}</style></head><body><main>
-<header><h1>PQ-Proof hashed receipt {verdict}</h1><button id="theme" type="button">Light</button></header>
+<title>PQ-Proof receipt</title><style>{style}</style></head><body><main>
+<header><h1>PQ-Proof hashed receipt {verdict}{approval}</h1><button id="theme" type="button">Light</button></header>
 <section><div class="grid">
 <div><div class="muted">Repository</div><code>{_e(r['repo']['url'] or 'no public URL')}</code><br><span class="muted">checked out from <code>{_e(r['repo']['path'])}</code></span></div>
 <div><div class="muted">Commit, tree</div><span class="hash">{_e(r['repo']['commit'])}</span><br><span class="hash">{_e(r['repo']['tree'])}</span></div>
@@ -746,7 +814,7 @@ def render_html(r):
     p = r["probe"]
     parts.append(f"""<h2>Probe and plan</h2><section><div class="grid">
 <div><div class="muted">Probe</div>{_e(p['name'])} {_e(p['version'])}, built in a microVM from <code>{_e(p['built_with'].partition('@')[0])}</code><br>binary {_short(p['sha256'])}<br>source {_short(p['source_sha256'])}</div>
-<div><div class="muted">Approved plan</div>{_link(r['plan']['file'])} {_short(r['plan']['file_sha256'])}<br>{_e(len(r['plan']['commands']))} commands, {_e(len(r['plan']['images']))} images, targets {_e(', '.join(t['addr'] + ' (' + t['server'] + ')' for t in r['plan']['targets']))}</div>
+<div>{plan_head}{_link(r['plan']['file'])} {_short(r['plan']['file_sha256'])}<br>{_e(len(r['plan']['commands']))} commands, {_e(len(r['plan']['images']))} images, targets {_e(', '.join(t['addr'] + ' (' + t['server'] + ')' for t in r['plan']['targets']))}</div>
 <div><div class="muted">Model</div>{_e(m['provider'])}{(' ' + _e(', '.join(m['models']))) if m['models'] else ''}<br>{_e(f"{m['requests_sent']} requests, {(m['tokens'] or {}).get('prompt_tokens', 0)} prompt + {(m['tokens'] or {}).get('completion_tokens', 0)} completion tokens, ${m['cost_usd']}") if m['tokens'] else ''}{('<br>' + _link(m['requests']) + ' ' + _short(m['requests_sha256'])) if m['requests'] else ''}</div>
 <div><div class="muted">Host command lines</div>{_link(r['host_commands']['file'])} ({_e(r['host_commands']['count'])}) {_short(r['host_commands']['file_sha256'])}</div>
 </div></section>""")
@@ -764,9 +832,12 @@ def main(argv):
     if len(argv) != 1:
         print("usage: python3 -m pqproof verify-receipt RECEIPT_DIR")
         return 2
-    results = verify(argv[0])
+    notes = []
+    results = verify(argv[0], notes)
     for ok, what in results:
         print(f"{'ok  ' if ok else 'FAIL'} {what}")
+    for note in notes:
+        print(f"note {note}")
     bad = sum(1 for ok, _ in results if not ok)
     print(f"{'all checks pass' if not bad else f'{bad} check(s) failed'} ({len(results)} checks)")
     return 0 if not bad else 1

@@ -19,7 +19,7 @@ from pqproof import pipeline, prove, receipt
 from pqproof.images import GOLANG
 from pqproof.loop import BuildResult, ScriptedModel, run_loop
 from pqproof.pipeline import Layout, Pipeline, session_record
-from pqproof.plan import compile_allowlist
+from pqproof.plan import approve, compile_allowlist, plan_json, plan_sha256
 from pqproof.sandbox import captured
 from pqproof.scan import scan
 from test_pipeline import GO, NG, PLAN, FakeRunner
@@ -290,6 +290,161 @@ class Receipt(unittest.TestCase):
         root = self.copy()  # a failed run may have passing proofs: that is no contradiction
         self.rewrite(root, lambda j: j.update(verdict="fail"), rehash=True)
         self.assertEqual(self.failures(root), [])
+
+
+# What make_run's report gave before receipts recorded the approval (7b7803f): its receipt_id and the
+# SHA-256 of its receipt.html. A receipt without approval must keep both, or the receipts already
+# published stop verifying. Both change only if make_run or its fixtures change.
+LEGACY_ID = "28a2a8dc458437ed87fa455018e0b40f5d47def471103ded42d20212fa9fe672"
+LEGACY_PAGE_SHA256 = "282f2d7583d5f683b90f625806f99aadf9a0a696d93a8c3cd674284027222e9a"
+AT = 1793805101.5  # 2026-11-04T15:11:41.500Z
+
+
+class Approval(unittest.TestCase):
+    """The receipt says how the plan was approved: at the terminal (prompt), by its hash on a second
+    run (plan-hash) or unattended (flag, --approve). The README said "a human approves", while every
+    recorded run had used --approve and its page said "Approved plan"."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.report, cls.log_dir = make_run(cls.tmp.name)
+        plan = cls.report["plan"]
+        cls.dirs, cls.receipts = {}, {}
+        for mode, how in (("flag", {"flag": True}), ("prompt", {"approver": "alice", "ask": lambda q: "y\n"}),
+                          ("plan-hash", {"plan_hash": plan_sha256(plan)}), (None, None)):
+            report = dict(cls.report, approval=approve(plan, now=lambda: AT, **how)) if how else cls.report
+            cls.dirs[mode] = os.path.join(cls.tmp.name, str(mode))
+            cls.receipts[mode] = receipt.build(json.loads(json.dumps(report)), cls.log_dir, cls.dirs[mode])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def copy(self, mode):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        return shutil.copytree(self.dirs[mode], os.path.join(d.name, "r"), symlinks=True)
+
+    def failures(self, root):
+        return [w for ok, w in receipt.verify(root) if not ok]
+
+    def rewrite(self, root, change):
+        """Change receipt.json and write every hash and the page again, as anyone can."""
+        p = pathlib.Path(root, "receipt.json")
+        j = json.loads(p.read_text())
+        change(j)
+        j["receipt_id"] = receipt.compute_id(j)
+        pathlib.Path(root, "receipt.html").write_text(receipt.render_html(j))
+        p.write_text(json.dumps(j))
+
+    def test_the_approval_is_recorded_and_inside_receipt_id(self):
+        r = self.receipts["flag"]
+        self.assertEqual(r["approval"], {"mode": "flag", "approver": None, "at": "2026-11-04T15:11:41.500Z",
+                                         "plan_sha256": r["plan"]["file_sha256"]})
+        plan_bytes = pathlib.Path(self.dirs["flag"], r["plan"]["file"]).read_bytes()
+        self.assertEqual(plan_bytes, plan_json(self.report["plan"]))
+        self.assertEqual(hashlib.sha256(plan_bytes).hexdigest(), r["approval"]["plan_sha256"])
+        self.assertEqual({m: x["approval"]["mode"] for m, x in self.receipts.items() if m},
+                         {"flag": "flag", "prompt": "prompt", "plan-hash": "plan-hash"})
+        self.assertEqual((self.receipts["prompt"]["approval"]["approver"], self.receipts["plan-hash"]["approval"]["approver"]),
+                         ("alice", None))
+        # the id hashes the approval: without it, the receipt is the one written with no approval
+        self.assertEqual(receipt.compute_id({k: v for k, v in r.items() if k != "approval"}), self.receipts[None]["receipt_id"])
+        self.assertEqual(len({x["receipt_id"] for x in self.receipts.values()}), 4)
+        for mode in ("flag", "prompt", "plan-hash"):
+            with self.subTest(mode):
+                results = receipt.verify(self.dirs[mode])
+                self.assertEqual([ok for ok, w in results if w.startswith("approval:")], [True])
+                self.assertEqual(self.failures(self.dirs[mode]), [])
+        root = self.copy("flag")  # an approval changed after the fact, id not written again
+        p = pathlib.Path(root, "receipt.json")
+        p.write_text(json.dumps(dict(json.loads(p.read_text()), approval=dict(r["approval"], mode="prompt"))))
+        self.assertTrue(any(w.startswith("receipt_id is") for w in self.failures(root)))
+
+    def test_a_receipt_without_approval_verifies_as_before(self):
+        r = self.receipts[None]
+        self.assertNotIn("approval", r)
+        self.assertEqual(r["receipt_id"], LEGACY_ID)
+        notes = []
+        results = receipt.verify(self.dirs[None], notes)
+        self.assertEqual([w for ok, w in results if not ok], [])
+        self.assertEqual(notes, ["approval: not recorded (legacy)"])
+        self.assertEqual(len(results), len(receipt.verify(self.dirs["flag"])) - 1)  # the note is not a check
+        # the page as the version before approval wrote it (it said "Approved plan") still matches
+        old_page = receipt.render_html(r, legacy_page=True)
+        self.assertEqual(hashlib.sha256(old_page.encode()).hexdigest(), LEGACY_PAGE_SHA256)
+        root = self.copy(None)
+        pathlib.Path(root, "receipt.html").write_text(old_page)
+        self.assertEqual(self.failures(root), [])
+        env = dict(os.environ, PYTHONPATH=str(ROOT))
+        cli = subprocess.run([sys.executable, "-m", "pqproof", "verify-receipt", root], capture_output=True, text=True, env=env)
+        self.assertEqual(cli.returncode, 0, cli.stdout + cli.stderr)
+        self.assertIn("\nnote approval: not recorded (legacy)\n", cli.stdout)
+        self.assertIn(f"all checks pass ({len(results)} checks)", cli.stdout)
+        # a receipt with an approval gets no such pass for the old page
+        root = self.copy("flag")
+        pathlib.Path(root, "receipt.html").write_text(receipt.render_html(self.receipts["flag"], legacy_page=True))
+        self.assertEqual(self.failures(root), ["receipt.html differs from this receipt"])
+
+    def test_an_approval_of_another_plan_fails(self):
+        # "eve\n" fits the schema's pattern under re.search, where $ also matches before a final newline,
+        # so the approval check refuses it; \u3164 (shown as nothing) is not \w in a JSON Schema validator,
+        # and the schema's ASCII class refuses it as that validator would
+        cases = {"plan_sha256 is not plan.json's": ("flag", "approval: ", lambda j: j["approval"].update(plan_sha256="0" * 64)),
+                 "unattended, yet naming an approver": ("flag", "approval: ", lambda j: j["approval"].update(approver="alice")),
+                 "an approver with a final newline": ("prompt", "approval: approver 'eve\\n'",
+                                                      lambda j: j["approval"].update(approver="eve\n")),
+                 "an invisible approver": ("plan-hash", "receipt.json does not fit the schema:\n  receipt.approval.approver",
+                                           lambda j: j["approval"].update(approver="\u3164"))}
+        for name, (mode, says, change) in cases.items():
+            with self.subTest(name):
+                root = self.copy(mode)
+                self.rewrite(root, change)
+                bad = self.failures(root)
+                self.assertEqual(len(bad), 1, bad)
+                self.assertTrue(bad[0].startswith(says), bad)
+        # plan.json swapped for another plan and every hash written again, the approval left alone
+        root = self.copy("plan-hash")
+        other = plan_json(dict(self.report["plan"], summary="Another plan than the one approved."))
+        digest = hashlib.sha256(other).hexdigest()
+        pathlib.Path(root, "artifacts", "plan.json").write_bytes(other)
+
+        def swap(j):
+            j["plan"]["file_sha256"] = digest
+            next(a for a in j["artifacts"] if a["path"] == "artifacts/plan.json").update(bytes=len(other), sha256=digest)
+        self.rewrite(root, swap)
+        self.assertEqual(self.failures(root), [f"approval: plan_sha256 {plan_sha256(self.report['plan'])} is not the "
+                                               f"SHA-256 of artifacts/plan.json ({digest})"])
+
+    def test_the_page_says_how_the_plan_was_approved(self):
+        def page(mode):
+            return pathlib.Path(self.dirs[mode], "receipt.html").read_text()
+
+        def h1(text):
+            return re.search(r"<h1>.*?</h1>", text, re.S)[0]
+
+        flag = page("flag")
+        self.assertEqual(flag.count("Unattended approval (--approve)"), 2)  # next to the verdict, above the plan
+        self.assertIn("Unattended approval (--approve)", h1(flag))
+        self.assertIn("nobody reviewed the plan before it ran", flag)
+        for text in ("Approved plan", "Approved by", "approved by"):
+            self.assertNotIn(text, flag)
+        for mode, who in (("prompt", "alice"), ("plan-hash", "(no name given)")):
+            with self.subTest(mode):
+                p = page(mode)
+                line = f'Approved by {who} at <span class="nowrap">2026-11-04T15:11:41.500Z</span>'
+                self.assertEqual(p.count(line), 2)
+                self.assertIn(line, h1(p))
+                self.assertNotIn("Unattended", p)
+                self.assertNotIn("Approved plan", p)
+                # the name is whatever --approver said: the page does not present it as checked
+                self.assertEqual("the name is as given with --approver, not checked" in p, mode == "prompt")
+        legacy = page(None)
+        self.assertIn("approval not recorded", h1(legacy))
+        self.assertNotIn("Approved plan", legacy)
+        for p in [page(m) for m in self.dirs]:  # still no "signed" and nothing loaded from elsewhere
+            self.assertNotRegex(p, r"(?i)signed|<(?:link|img|iframe|object|embed)\b|\bsrc\s*=|url\(|@import")
 
 
 class Canonical(unittest.TestCase):
