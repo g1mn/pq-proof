@@ -1,0 +1,50 @@
+[
+  {
+    "error": null,
+    "model": "glm-5.3",
+    "status": 200,
+    "usage": {
+      "completion_tokens": 1280,
+      "completion_tokens_details": {
+        "reasoning_tokens": 796
+      },
+      "prompt_tokens": 4099,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 5379
+    }
+  },
+  {
+    "error": null,
+    "model": "glm-5.3",
+    "status": 200,
+    "usage": {
+      "completion_tokens": 532,
+      "completion_tokens_details": {
+        "reasoning_tokens": 39
+      },
+      "prompt_tokens": 4686,
+      "prompt_tokens_details": {
+        "cached_tokens": 4096
+      },
+      "total_tokens": 5218
+    }
+  },
+  {
+    "error": null,
+    "model": "glm-5.3",
+    "status": 200,
+    "usage": {
+      "completion_tokens": 442,
+      "completion_tokens_details": {
+        "reasoning_tokens": 53
+      },
+      "prompt_tokens": 3355,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "total_tokens": 3797
+    }
+  }
+]

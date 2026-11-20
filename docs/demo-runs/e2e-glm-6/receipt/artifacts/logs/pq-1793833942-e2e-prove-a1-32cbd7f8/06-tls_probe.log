@@ -1,0 +1,9 @@
+$ tls_probe listeners -ports=4433,4434,8443,9443 -wait=10s
+exit code: 0
+--- stdout: 361 bytes, sha256 2010e984bb121bbd965625f8f0a923a46cad774fc45eab77b621d56f7c3e8bca
+listen: 0.0.0.0:8443 uid=65534 inode=90 pid=499 exe=/usr/sbin/nginx
+listen: 0.0.0.0:8443 uid=65534 inode=90 pid=500 exe=/usr/sbin/nginx
+listen: 127.0.0.1:4433 uid=0 inode=63 pid=486 exe=/usr/local/bin/tls_probe
+listen: 127.0.0.1:4434 uid=0 inode=75 pid=490 exe=/usr/local/bin/tls_probe
+listen: 127.0.0.1:9443 uid=65533 inode=84 pid=494 exe=/opt/pqproof/bin/api
+--- stderr: 0 bytes, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

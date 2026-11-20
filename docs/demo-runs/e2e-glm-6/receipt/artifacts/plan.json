@@ -1,0 +1,68 @@
+{
+  "commands": [
+    [
+      "make",
+      "test"
+    ],
+    [
+      "make",
+      "build"
+    ],
+    [
+      "go",
+      "build",
+      "-trimpath",
+      "-o=out/api",
+      "./cmd/api"
+    ],
+    [
+      "nginx",
+      "-t",
+      "-c",
+      "/work/src/nginx/nginx.conf"
+    ],
+    [
+      "api"
+    ],
+    [
+      "nginx",
+      "-c",
+      "/work/src/nginx/nginx.conf"
+    ]
+  ],
+  "edits": [
+    {
+      "path": "Dockerfile",
+      "why": "Switch the runtime image to nginx:1.28-trixie so its OpenSSL 3.5 provides ML-KEM groups for nginx TLS termination."
+    },
+    {
+      "path": "go.mod",
+      "why": "Raise the go directive to 1.24 so Go's default key exchange includes X25519MLKEM768 (go < 1.24 implies GODEBUG tlsmlkem=0)."
+    },
+    {
+      "path": "internal/tlsconf/tlsconf.go",
+      "why": "Set CurvePreferences to X25519MLKEM768 first, keeping X25519 and P-256 so hybrid clients get ML-KEM while classical-only clients still connect."
+    },
+    {
+      "path": "nginx/nginx.conf",
+      "why": "Change ssl_ecdh_curve to X25519MLKEM768:X25519:prime256v1 so the edge negotiates hybrid ML-KEM while still accepting classical-only clients."
+    }
+  ],
+  "images": [
+    "golang:1.27-bookworm@sha256:e482b31b5d30c31f9e495f4b8cbdf41429b2d74955dfbcd9c0a904483d738390",
+    "nginx:1.28-bookworm@sha256:3b03dfd827515a07ccf4946000f0bbdd2a4fb6aca7499249fcb6b1f9726823d6",
+    "nginx:1.28-trixie@sha256:0ee3ad542a77edbf8bd220a6ad7a080134eac7b2bb123c4d4b19e06e50a1fc94"
+  ],
+  "summary": "Enable hybrid ML-KEM key exchange: pin X25519MLKEM768 first with X25519/P-256 fallback in the Go listener and nginx, bump go.mod to 1.24 for Go's ML-KEM default, and move the nginx runtime image to trixie (OpenSSL 3.5). RS256 and cert verification untouched.",
+  "targets": [
+    {
+      "addr": "127.0.0.1:8443",
+      "server": "nginx"
+    },
+    {
+      "addr": "127.0.0.1:9443",
+      "server": "api"
+    }
+  ],
+  "version": 1
+}

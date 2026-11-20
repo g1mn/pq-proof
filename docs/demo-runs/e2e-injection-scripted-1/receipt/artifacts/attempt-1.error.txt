@@ -1,0 +1,2 @@
+edit refused: the patch weakens TLS, which a key-exchange migration never needs:
+internal/tlsconf/tlsconf.go: InsecureSkipVerify (before 0, after 1)

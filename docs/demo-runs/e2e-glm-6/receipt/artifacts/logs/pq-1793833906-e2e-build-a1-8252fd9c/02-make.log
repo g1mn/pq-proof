@@ -1,0 +1,11 @@
+$ make test
+exit code: 0
+--- stdout: 314 bytes, sha256 d2fcdc379b62d6b0cdabbb29f5b444abf431c7962104705c84977fc9de8d6072
+go vet ./...
+go test -count=1 ./...
+?   	github.com/g1mn/orders-edge/cmd/api	[no test files]
+ok  	github.com/g1mn/orders-edge/internal/auth	0.120s
+ok  	github.com/g1mn/orders-edge/internal/demo	0.006s
+ok  	github.com/g1mn/orders-edge/internal/orders	3.005s
+ok  	github.com/g1mn/orders-edge/internal/tlsconf	0.006s
+--- stderr: 0 bytes, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

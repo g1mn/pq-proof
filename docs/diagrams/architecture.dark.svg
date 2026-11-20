@@ -814,8 +814,8 @@ svg[data-node-ui][data-preset="editorial"] :is([data-graph-role="structural-fram
         <text x="745" y="656" class="t-muted" font-size="9" text-anchor="middle">TLS front, rate limits</text>
         </g>
 
-        <g id="node-browser" data-node-id="browser" data-node-label="Visitor browser" tabindex="0" role="button" aria-label="Focus Visitor browser, 149-28-14-122.sslip.io, Architecture component" aria-pressed="false" data-node-kind="external" data-node-sublabel="149-28-14-122.sslip.io" data-node-context="Architecture component">
-          <title>Visitor browser · 149-28-14-122.sslip.io · Architecture component</title>
+        <g id="node-browser" data-node-id="browser" data-node-label="Visitor browser" tabindex="0" role="button" aria-label="Focus Visitor browser, public demo (shut down), Architecture component" aria-pressed="false" data-node-kind="external" data-node-sublabel="public demo (shut down)" data-node-context="Architecture component">
+          <title>Visitor browser · public demo (shut down) · Architecture component</title>
           <rect x="640" y="800" width="210" height="64" rx="8" class="c-mask"/>
           <rect x="640" y="800" width="210" height="64" rx="8" class="c-external" data-animate="node" style="--step: 8; --flow-node-name: archify-relay-node-2;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(646 806) scale(0.6875)">
@@ -823,7 +823,7 @@ svg[data-node-ui][data-preset="editorial"] :is([data-graph-role="structural-fram
             <path d="M8 2.5h5.5V8M13.5 2.5 7.5 8.5"/>
           </g>
           <text data-node-label="" x="745" y="830" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Visitor browser</text>
-        <text x="745" y="846" class="t-muted" font-size="9" text-anchor="middle">149-28-14-122.sslip.io</text>
+        <text x="745" y="846" class="t-muted" font-size="9" text-anchor="middle">public demo (shut down)</text>
         </g>
 
         <!-- Connection labels -->

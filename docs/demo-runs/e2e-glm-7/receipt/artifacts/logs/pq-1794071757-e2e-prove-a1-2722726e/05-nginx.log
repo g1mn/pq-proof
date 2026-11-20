@@ -1,0 +1,7 @@
+$ nginx -t -c /work/src/nginx/nginx.conf
+exit code: 0
+--- stdout: 0 bytes, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+--- stderr: 253 bytes, sha256 79e56888b947075abb8af54868da25a13097ac7688e8579e417493b9420ad17b
+nginx: [alert] could not open error log file: open() "/var/log/nginx/error.log" failed (13: Permission denied)
+nginx: the configuration file /work/src/nginx/nginx.conf syntax is ok
+nginx: configuration file /work/src/nginx/nginx.conf test is successful

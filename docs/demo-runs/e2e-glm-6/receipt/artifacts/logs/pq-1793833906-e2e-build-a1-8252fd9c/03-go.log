@@ -1,0 +1,4 @@
+$ go build -trimpath -o=out/api ./cmd/api
+exit code: 0
+--- stdout: 0 bytes, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+--- stderr: 0 bytes, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

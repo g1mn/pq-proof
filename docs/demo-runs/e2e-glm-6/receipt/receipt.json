@@ -1,0 +1,1821 @@
+{
+  "artifacts": [
+    {
+      "bytes": 1643,
+      "path": "artifacts/attempt-1.diff",
+      "sha256": "115bc7069d352d4b34df6b7fe22134faa4828e4dc3ce695aa40b6893241cce8e"
+    },
+    {
+      "bytes": 1435,
+      "path": "artifacts/cbom-after.json",
+      "sha256": "7fc693bc89a4e442e1c2a3a4c0c607b12fb5955d1f66bc96c7a454755d2ae965"
+    },
+    {
+      "bytes": 1948,
+      "path": "artifacts/cbom-before.json",
+      "sha256": "18584fce11f21175bd831f9873b9aec0ed13b6122ae7194e3a89a5acd9aa9985"
+    },
+    {
+      "bytes": 18411,
+      "path": "artifacts/host-commands.json",
+      "sha256": "989254bc09a0266e3d33a98f4f65772c6e3514aa400b1a70e24f93d4830a3717"
+    },
+    {
+      "bytes": 235,
+      "path": "artifacts/logs/pq-1793833854-probe-build-51decac4/01-go.log",
+      "sha256": "d89d28179fb8be429703867c0f45a29670558b3700d34358ee719488e2cb38fb"
+    },
+    {
+      "bytes": 253,
+      "path": "artifacts/logs/pq-1793833865-e2e-build-a0-ff3d3e32/01-make.log",
+      "sha256": "dce98a6f38405795d5c0ba7933194f2261f545dac472f1de800b8d6135894a7f"
+    },
+    {
+      "bytes": 527,
+      "path": "artifacts/logs/pq-1793833865-e2e-build-a0-ff3d3e32/02-make.log",
+      "sha256": "809024b226402db468dca64d9f2f2af3aa976d89cd582d6feb9dac5780bd11af"
+    },
+    {
+      "bytes": 241,
+      "path": "artifacts/logs/pq-1793833865-e2e-build-a0-ff3d3e32/03-go.log",
+      "sha256": "b5885273a9b7ab5d2d457ed1d30b03c1644ecd2bc1b1c37fd821f68e43e2bfd1"
+    },
+    {
+      "bytes": 247,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/01-tls_probe.log",
+      "sha256": "8b41b1fc2f445dcbffd6f50af794f594350f5585c25ef48b145ed9cac3a16f3b"
+    },
+    {
+      "bytes": 302,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/02-tls_probe.log",
+      "sha256": "788143f5e6f2c53b375e4eb653ec74436bfba57c935e0186976dfcecb28ea957"
+    },
+    {
+      "bytes": 264,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/03-install.log",
+      "sha256": "2cdd6fe0c3dfbb8b176f2941de9cc3d08f56497a3db13df894e17c3d293b6fd8"
+    },
+    {
+      "bytes": 281,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/04-install.log",
+      "sha256": "8d4dabf206c4d0d729f2abf99e21d866db9e2f12fe128a462beb36da83f4a3ea"
+    },
+    {
+      "bytes": 495,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/05-nginx.log",
+      "sha256": "66927ac677153b9fd1c640113082b3483870bad4b3fdf745e21e68ef4cf73a38"
+    },
+    {
+      "bytes": 623,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/06-tls_probe.log",
+      "sha256": "8a1ca3c22545675d91d7b84f49c9a7181c98466fc6c93a02e89775cfb61a71d9"
+    },
+    {
+      "bytes": 462,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/07-tls_probe.log",
+      "sha256": "133180222a34b1741f813dceff85ac2e705bd0ece36458161203b868370c9f76"
+    },
+    {
+      "bytes": 463,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/08-tls_probe.log",
+      "sha256": "cfbbfbce06409d227bfc7e8ad03a814fa15d1edd7980071ab1c132aa6de37481"
+    },
+    {
+      "bytes": 450,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/09-tls_probe.log",
+      "sha256": "13fec52f1bb68c07c710d593cf03aa04c6d936187e3df750f6d536fcf46c73d6"
+    },
+    {
+      "bytes": 471,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/10-tls_probe.log",
+      "sha256": "ed0463345c8104086af1d6ca58054970f2042a2a1ba741ad6602bcd697c1b226"
+    },
+    {
+      "bytes": 457,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/11-tls_probe.log",
+      "sha256": "d47cebc5c7e5e7c77bcd0fcda86bc786bf4e724c8918e5c4e374773320a3dea6"
+    },
+    {
+      "bytes": 471,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/12-tls_probe.log",
+      "sha256": "01969d7df078bb00a824de70d1bc5014a23a2913ee5cc52b60bc57f6c22861a8"
+    },
+    {
+      "bytes": 457,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/13-tls_probe.log",
+      "sha256": "37d0919ce42e11f468fccab131ff5795a8d8e5469cd2aba019a7d7fa5ad2f9ff"
+    },
+    {
+      "bytes": 623,
+      "path": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/14-tls_probe.log",
+      "sha256": "8a1ca3c22545675d91d7b84f49c9a7181c98466fc6c93a02e89775cfb61a71d9"
+    },
+    {
+      "bytes": 253,
+      "path": "artifacts/logs/pq-1793833906-e2e-build-a1-8252fd9c/01-make.log",
+      "sha256": "dce98a6f38405795d5c0ba7933194f2261f545dac472f1de800b8d6135894a7f"
+    },
+    {
+      "bytes": 527,
+      "path": "artifacts/logs/pq-1793833906-e2e-build-a1-8252fd9c/02-make.log",
+      "sha256": "7073faa1b5fa16d504a307a30997d4228865ca52743bb3d65c4d49f57b8cc464"
+    },
+    {
+      "bytes": 241,
+      "path": "artifacts/logs/pq-1793833906-e2e-build-a1-8252fd9c/03-go.log",
+      "sha256": "b5885273a9b7ab5d2d457ed1d30b03c1644ecd2bc1b1c37fd821f68e43e2bfd1"
+    },
+    {
+      "bytes": 247,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/01-tls_probe.log",
+      "sha256": "8b41b1fc2f445dcbffd6f50af794f594350f5585c25ef48b145ed9cac3a16f3b"
+    },
+    {
+      "bytes": 302,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/02-tls_probe.log",
+      "sha256": "788143f5e6f2c53b375e4eb653ec74436bfba57c935e0186976dfcecb28ea957"
+    },
+    {
+      "bytes": 264,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/03-install.log",
+      "sha256": "2cdd6fe0c3dfbb8b176f2941de9cc3d08f56497a3db13df894e17c3d293b6fd8"
+    },
+    {
+      "bytes": 281,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/04-install.log",
+      "sha256": "8d4dabf206c4d0d729f2abf99e21d866db9e2f12fe128a462beb36da83f4a3ea"
+    },
+    {
+      "bytes": 495,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/05-nginx.log",
+      "sha256": "66927ac677153b9fd1c640113082b3483870bad4b3fdf745e21e68ef4cf73a38"
+    },
+    {
+      "bytes": 621,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/06-tls_probe.log",
+      "sha256": "5948863e2a8755a49453eca782139ff80f4109d0a2850fb997e17a25b6eb167d"
+    },
+    {
+      "bytes": 462,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/07-tls_probe.log",
+      "sha256": "133180222a34b1741f813dceff85ac2e705bd0ece36458161203b868370c9f76"
+    },
+    {
+      "bytes": 463,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/08-tls_probe.log",
+      "sha256": "cfbbfbce06409d227bfc7e8ad03a814fa15d1edd7980071ab1c132aa6de37481"
+    },
+    {
+      "bytes": 450,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/09-tls_probe.log",
+      "sha256": "13fec52f1bb68c07c710d593cf03aa04c6d936187e3df750f6d536fcf46c73d6"
+    },
+    {
+      "bytes": 470,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/10-tls_probe.log",
+      "sha256": "e61dc9dbb6d74f580856a03940cfa246722dcd440a2a430d21bfb8cf5d7578c0"
+    },
+    {
+      "bytes": 458,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/11-tls_probe.log",
+      "sha256": "264c93c4c189e5af4414b5d8552b4d0f4f9e1a50f5d60f1cb8e2d15ca113b0c6"
+    },
+    {
+      "bytes": 470,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/12-tls_probe.log",
+      "sha256": "585628e8581c835356fd75c2d70ec02645b9fd314bb18c90c5d129daaa0e26f1"
+    },
+    {
+      "bytes": 458,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/13-tls_probe.log",
+      "sha256": "91f3a2ededdc20ae16d1c5c6e2f0430328ad8ac9cca8a1b72dcc3d14e18d0839"
+    },
+    {
+      "bytes": 621,
+      "path": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/14-tls_probe.log",
+      "sha256": "5948863e2a8755a49453eca782139ff80f4109d0a2850fb997e17a25b6eb167d"
+    },
+    {
+      "bytes": 984,
+      "path": "artifacts/model-requests.json",
+      "sha256": "8bc117bbc4845cf881bce35b82e7f6b9b46cc2ae363c5da74a4ded02d5e9ed89"
+    },
+    {
+      "bytes": 1932,
+      "path": "artifacts/plan.json",
+      "sha256": "bb10284dcae81ff575312fa93c7533fb7a8c779412ddec90032d18f768e4eead"
+    }
+  ],
+  "attempts": [
+    {
+      "diff": "artifacts/attempt-1.diff",
+      "diff_sha256": "115bc7069d352d4b34df6b7fe22134faa4828e4dc3ce695aa40b6893241cce8e",
+      "error": null,
+      "error_sha256": null,
+      "number": 1,
+      "ok": true,
+      "outcome": "built and proved",
+      "tls_weakening": []
+    }
+  ],
+  "cbom": {
+    "after": [
+      {
+        "algorithm": "nginx:1.28-trixie",
+        "auto_fix": true,
+        "blocks_hybrid": false,
+        "component": "dockerfile",
+        "detail": "runtime base image: Debian 13 (trixie) ships OpenSSL 3.5, which has ML-KEM",
+        "kind": "base-image",
+        "line": 8,
+        "nist": "includes ML-KEM-768 (NIST IR 8547, Table 5)",
+        "path": "Dockerfile"
+      },
+      {
+        "algorithm": "JWT RS256 (RSA)",
+        "auto_fix": false,
+        "blocks_hybrid": false,
+        "component": "go",
+        "detail": "token signature; out of scope for automatic fixes",
+        "kind": "signature",
+        "line": 29,
+        "nist": "quantum-vulnerable: deprecated after 2030, disallowed after 2035 (NIST IR 8547, Table 2)",
+        "path": "internal/auth/jwt.go"
+      },
+      {
+        "algorithm": "X25519MLKEM768, X25519, P-256",
+        "auto_fix": true,
+        "blocks_hybrid": false,
+        "component": "go",
+        "detail": "a []tls.CurveID list (CurvePreferences) pins the TLS groups: offers X25519MLKEM768",
+        "kind": "key-exchange",
+        "line": 13,
+        "nist": "includes ML-KEM-768 (NIST IR 8547, Table 5)",
+        "path": "internal/tlsconf/tlsconf.go"
+      },
+      {
+        "algorithm": "X25519MLKEM768, X25519, P-256",
+        "auto_fix": true,
+        "blocks_hybrid": false,
+        "component": "nginx",
+        "detail": "ssl_ecdh_curve pins the TLS groups: offers X25519MLKEM768",
+        "kind": "key-exchange",
+        "line": 21,
+        "nist": "includes ML-KEM-768 (NIST IR 8547, Table 5)",
+        "path": "nginx/nginx.conf"
+      }
+    ],
+    "after_file": "artifacts/cbom-after.json",
+    "after_file_sha256": "7fc693bc89a4e442e1c2a3a4c0c607b12fb5955d1f66bc96c7a454755d2ae965",
+    "before": [
+      {
+        "algorithm": "nginx:1.28-bookworm",
+        "auto_fix": true,
+        "blocks_hybrid": true,
+        "component": "dockerfile",
+        "detail": "runtime base image: Debian 12 (bookworm) ships OpenSSL 3.0, which has no ML-KEM",
+        "kind": "base-image",
+        "line": 8,
+        "nist": "quantum-vulnerable: deprecated after 2030, disallowed after 2035 (NIST IR 8547, Table 4)",
+        "path": "Dockerfile"
+      },
+      {
+        "algorithm": "go 1.22",
+        "auto_fix": true,
+        "blocks_hybrid": true,
+        "component": "go.mod",
+        "detail": "go 1.22 < 1.24 keeps Go's pre-1.24 default key exchanges (GODEBUG tlsmlkem=0), so X25519MLKEM768 stays off once a curve pin is removed",
+        "kind": "toolchain",
+        "line": 3,
+        "nist": "quantum-vulnerable: deprecated after 2030, disallowed after 2035 (NIST IR 8547, Table 4)",
+        "path": "go.mod"
+      },
+      {
+        "algorithm": "JWT RS256 (RSA)",
+        "auto_fix": false,
+        "blocks_hybrid": false,
+        "component": "go",
+        "detail": "token signature; out of scope for automatic fixes",
+        "kind": "signature",
+        "line": 29,
+        "nist": "quantum-vulnerable: deprecated after 2030, disallowed after 2035 (NIST IR 8547, Table 2)",
+        "path": "internal/auth/jwt.go"
+      },
+      {
+        "algorithm": "P-256",
+        "auto_fix": true,
+        "blocks_hybrid": true,
+        "component": "go",
+        "detail": "a []tls.CurveID list (CurvePreferences) pins the TLS groups: no X25519MLKEM768",
+        "kind": "key-exchange",
+        "line": 12,
+        "nist": "quantum-vulnerable: deprecated after 2030, disallowed after 2035 (NIST IR 8547, Table 4)",
+        "path": "internal/tlsconf/tlsconf.go"
+      },
+      {
+        "algorithm": "P-256",
+        "auto_fix": true,
+        "blocks_hybrid": true,
+        "component": "nginx",
+        "detail": "ssl_ecdh_curve pins the TLS groups: no X25519MLKEM768",
+        "kind": "key-exchange",
+        "line": 21,
+        "nist": "quantum-vulnerable: deprecated after 2030, disallowed after 2035 (NIST IR 8547, Table 4)",
+        "path": "nginx/nginx.conf"
+      }
+    ],
+    "before_file": "artifacts/cbom-before.json",
+    "before_file_sha256": "18584fce11f21175bd831f9873b9aec0ed13b6122ae7194e3a89a5acd9aa9985"
+  },
+  "checks": {
+    "attempts_at_most_3": true,
+    "baseline_hybrid_fails_classical_connects": true,
+    "canaries_in_sinkhole": [
+      "CANARY-0001"
+    ],
+    "cbom_after_blocking_rows": [],
+    "cbom_after_unknown_rows": [],
+    "every_sandbox_destroyed": true,
+    "guest_build_commands": 9,
+    "host_build_commands": 0,
+    "patched_negotiates_X25519MLKEM768_classical_connects": true,
+    "targets_are_orders_edge_ports": true
+  },
+  "containment": {
+    "canaries_caught": [
+      "CANARY-0001"
+    ],
+    "dropped_by_policy": "not counted",
+    "guest_build_commands": 9,
+    "host_build_commands": 0,
+    "policy": [
+      "every microVM: msb create --no-net (all traffic denied, the host and private ranges included)",
+      "DNS: only to the host sinkhole's resolver, which records each query and answers NXDOMAIN",
+      "TCP: only to 203.0.113.0/24 (RFC 5737, never routed), through the sinkhole proxy, which records it",
+      "everything else, the internet, the host and the cloud metadata address included, is dropped by Microsandbox before it reaches the sinkhole: blocked, not counted"
+    ],
+    "reached_sinkhole": 2,
+    "reached_sinkhole_not_kept": 0,
+    "sandboxes": 5,
+    "sandboxes_destroyed": 5,
+    "tls_weakening_refused": []
+  },
+  "destroyed_at": "2026-11-04T23:12:24.649Z",
+  "finished_at": "2026-11-04T23:12:24.670Z",
+  "format": "pq-proof hashed receipt 2",
+  "host_commands": {
+    "count": 83,
+    "file": "artifacts/host-commands.json",
+    "file_sha256": "989254bc09a0266e3d33a98f4f65772c6e3514aa400b1a70e24f93d4830a3717"
+  },
+  "model": {
+    "cost_usd": 0.01441,
+    "models": [
+      "glm-5.3"
+    ],
+    "params": {
+      "max_tokens": 8192,
+      "reasoning_effort": "low"
+    },
+    "provider": "Vultr Serverless Inference",
+    "requests": "artifacts/model-requests.json",
+    "requests_sent": 3,
+    "requests_sha256": "8bc117bbc4845cf881bce35b82e7f6b9b46cc2ae363c5da74a4ded02d5e9ed89",
+    "requests_without_usage": 0,
+    "tokens": {
+      "calls": 3,
+      "completion_tokens": 1857,
+      "prompt_tokens": 11785,
+      "reasoning_tokens": 608,
+      "total_tokens": 13642
+    }
+  },
+  "not_fixed": [
+    {
+      "item": "internal/auth/jwt.go:29 JWT RS256 (RSA)",
+      "reason": "signature: token signature; out of scope for automatic fixes. quantum-vulnerable: deprecated after 2030, disallowed after 2035 (NIST IR 8547, Table 2)"
+    }
+  ],
+  "note": "Hashed receipt: receipt_id is the SHA-256 of this JSON without receipt_id in RFC 8785 canonical form (sorted keys, no whitespace, UTF-8), and every file in artifacts is listed with its SHA-256. `python3 -m pqproof verify-receipt DIR` recomputes them. The hashes show that the files are the ones this receipt names; they do not show who produced it, so compare receipt_id with one from a source you trust.",
+  "patch": {
+    "attempt": 1,
+    "diff": "artifacts/attempt-1.diff",
+    "diff_sha256": "115bc7069d352d4b34df6b7fe22134faa4828e4dc3ce695aa40b6893241cce8e",
+    "files": [
+      "Dockerfile",
+      "go.mod",
+      "internal/tlsconf/tlsconf.go",
+      "nginx/nginx.conf"
+    ]
+  },
+  "plan": {
+    "commands": [
+      [
+        "make",
+        "test"
+      ],
+      [
+        "make",
+        "build"
+      ],
+      [
+        "go",
+        "build",
+        "-trimpath",
+        "-o=out/api",
+        "./cmd/api"
+      ],
+      [
+        "nginx",
+        "-t",
+        "-c",
+        "/work/src/nginx/nginx.conf"
+      ],
+      [
+        "api"
+      ],
+      [
+        "nginx",
+        "-c",
+        "/work/src/nginx/nginx.conf"
+      ]
+    ],
+    "file": "artifacts/plan.json",
+    "file_sha256": "bb10284dcae81ff575312fa93c7533fb7a8c779412ddec90032d18f768e4eead",
+    "images": [
+      {
+        "architecture": "amd64",
+        "digest": "sha256:e482b31b5d30c31f9e495f4b8cbdf41429b2d74955dfbcd9c0a904483d738390",
+        "pinned": "golang:1.27-bookworm@sha256:e482b31b5d30c31f9e495f4b8cbdf41429b2d74955dfbcd9c0a904483d738390",
+        "requested": "golang:1.27-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9"
+      },
+      {
+        "architecture": "amd64",
+        "digest": "sha256:3b03dfd827515a07ccf4946000f0bbdd2a4fb6aca7499249fcb6b1f9726823d6",
+        "pinned": "nginx:1.28-bookworm@sha256:3b03dfd827515a07ccf4946000f0bbdd2a4fb6aca7499249fcb6b1f9726823d6",
+        "requested": "nginx:1.28-bookworm@sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609"
+      },
+      {
+        "architecture": "amd64",
+        "digest": "sha256:0ee3ad542a77edbf8bd220a6ad7a080134eac7b2bb123c4d4b19e06e50a1fc94",
+        "pinned": "nginx:1.28-trixie@sha256:0ee3ad542a77edbf8bd220a6ad7a080134eac7b2bb123c4d4b19e06e50a1fc94",
+        "requested": "nginx:1.28-trixie"
+      }
+    ],
+    "targets": [
+      {
+        "addr": "127.0.0.1:8443",
+        "server": "nginx"
+      },
+      {
+        "addr": "127.0.0.1:9443",
+        "server": "api"
+      }
+    ]
+  },
+  "probe": {
+    "built_with": "golang:1.27-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9",
+    "name": "tls_probe",
+    "sha256": "9be0e19a2ae06d96cd2f4a485ea53a5cde13fe143f1842102d3a63801ccc2717",
+    "source_sha256": "9a86224dd8ea0610c7262bc0f335b55d90dbea7e67a9ee6744f8b9acec99a076",
+    "version": "0.3.0"
+  },
+  "proofs": [
+    {
+      "actual": "exit code 0",
+      "command": [
+        "make",
+        "build"
+      ],
+      "exit_code": 0,
+      "expected": "exit code 0",
+      "log": "artifacts/logs/pq-1793833865-e2e-build-a0-ff3d3e32/01-make.log",
+      "log_sha256": "dce98a6f38405795d5c0ba7933194f2261f545dac472f1de800b8d6135894a7f",
+      "name": "repository tests: make build",
+      "ok": true,
+      "step": "baseline"
+    },
+    {
+      "actual": "exit code 0",
+      "command": [
+        "make",
+        "test"
+      ],
+      "exit_code": 0,
+      "expected": "exit code 0",
+      "log": "artifacts/logs/pq-1793833865-e2e-build-a0-ff3d3e32/02-make.log",
+      "log_sha256": "809024b226402db468dca64d9f2f2af3aa976d89cd582d6feb9dac5780bd11af",
+      "name": "repository tests: make test",
+      "ok": true,
+      "step": "baseline"
+    },
+    {
+      "actual": "exit code 0",
+      "command": [
+        "nginx",
+        "-t",
+        "-c",
+        "/work/src/nginx/nginx.conf"
+      ],
+      "exit_code": 0,
+      "expected": "exit code 0",
+      "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/05-nginx.log",
+      "log_sha256": "66927ac677153b9fd1c640113082b3483870bad4b3fdf745e21e68ef4cf73a38",
+      "name": "nginx configuration test",
+      "ok": true,
+      "step": "baseline"
+    },
+    {
+      "actual": "X25519MLKEM768 (hybrid)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519MLKEM768",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=localhost",
+        "-wait=10s",
+        "127.0.0.1:4433"
+      ],
+      "exit_code": 0,
+      "expected": "X25519MLKEM768",
+      "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/07-tls_probe.log",
+      "log_sha256": "133180222a34b1741f813dceff85ac2e705bd0ece36458161203b868370c9f76",
+      "name": "positive control: hybrid-only client to the probe's hybrid reference server",
+      "ok": true,
+      "step": "baseline"
+    },
+    {
+      "actual": "no connection (remote error: tls: handshake failure)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519MLKEM768",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=localhost",
+        "-wait=10s",
+        "127.0.0.1:4434"
+      ],
+      "exit_code": 1,
+      "expected": "no connection",
+      "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/08-tls_probe.log",
+      "log_sha256": "cfbbfbce06409d227bfc7e8ad03a814fa15d1edd7980071ab1c132aa6de37481",
+      "name": "negative control: hybrid-only client to the X25519-only reference server",
+      "ok": true,
+      "step": "baseline"
+    },
+    {
+      "actual": "X25519 (classical)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519,P-256",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=localhost",
+        "-wait=10s",
+        "127.0.0.1:4434"
+      ],
+      "exit_code": 0,
+      "expected": "X25519",
+      "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/09-tls_probe.log",
+      "log_sha256": "13fec52f1bb68c07c710d593cf03aa04c6d936187e3df750f6d536fcf46c73d6",
+      "name": "negative control: classical client to the X25519-only reference server",
+      "ok": true,
+      "step": "baseline"
+    },
+    {
+      "actual": "no connection (remote error: tls: handshake failure)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519MLKEM768",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=orders-edge.local",
+        "-wait=10s",
+        "127.0.0.1:8443"
+      ],
+      "exit_code": 1,
+      "expected": "no connection (classical-only server)",
+      "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/10-tls_probe.log",
+      "log_sha256": "ed0463345c8104086af1d6ca58054970f2042a2a1ba741ad6602bcd697c1b226",
+      "name": "127.0.0.1:8443 (nginx): hybrid-only client",
+      "ok": true,
+      "step": "baseline"
+    },
+    {
+      "actual": "P-256 (classical)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519,P-256",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=orders-edge.local",
+        "-wait=10s",
+        "127.0.0.1:8443"
+      ],
+      "exit_code": 0,
+      "expected": "a classical group (older clients still connect)",
+      "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/11-tls_probe.log",
+      "log_sha256": "d47cebc5c7e5e7c77bcd0fcda86bc786bf4e724c8918e5c4e374773320a3dea6",
+      "name": "127.0.0.1:8443 (nginx): classical client",
+      "ok": true,
+      "step": "baseline"
+    },
+    {
+      "actual": "no connection (remote error: tls: handshake failure)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519MLKEM768",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=orders-edge.local",
+        "-wait=10s",
+        "127.0.0.1:9443"
+      ],
+      "exit_code": 1,
+      "expected": "no connection (classical-only server)",
+      "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/12-tls_probe.log",
+      "log_sha256": "01969d7df078bb00a824de70d1bc5014a23a2913ee5cc52b60bc57f6c22861a8",
+      "name": "127.0.0.1:9443 (api): hybrid-only client",
+      "ok": true,
+      "step": "baseline"
+    },
+    {
+      "actual": "P-256 (classical)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519,P-256",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=orders-edge.local",
+        "-wait=10s",
+        "127.0.0.1:9443"
+      ],
+      "exit_code": 0,
+      "expected": "a classical group (older clients still connect)",
+      "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/13-tls_probe.log",
+      "log_sha256": "37d0919ce42e11f468fccab131ff5795a8d8e5469cd2aba019a7d7fa5ad2f9ff",
+      "name": "127.0.0.1:9443 (api): classical client",
+      "ok": true,
+      "step": "baseline"
+    },
+    {
+      "actual": "exit code 0",
+      "command": [
+        "make",
+        "build"
+      ],
+      "exit_code": 0,
+      "expected": "exit code 0",
+      "log": "artifacts/logs/pq-1793833906-e2e-build-a1-8252fd9c/01-make.log",
+      "log_sha256": "dce98a6f38405795d5c0ba7933194f2261f545dac472f1de800b8d6135894a7f",
+      "name": "repository tests: make build",
+      "ok": true,
+      "step": "attempt 1"
+    },
+    {
+      "actual": "exit code 0",
+      "command": [
+        "make",
+        "test"
+      ],
+      "exit_code": 0,
+      "expected": "exit code 0",
+      "log": "artifacts/logs/pq-1793833906-e2e-build-a1-8252fd9c/02-make.log",
+      "log_sha256": "7073faa1b5fa16d504a307a30997d4228865ca52743bb3d65c4d49f57b8cc464",
+      "name": "repository tests: make test",
+      "ok": true,
+      "step": "attempt 1"
+    },
+    {
+      "actual": "exit code 0",
+      "command": [
+        "nginx",
+        "-t",
+        "-c",
+        "/work/src/nginx/nginx.conf"
+      ],
+      "exit_code": 0,
+      "expected": "exit code 0",
+      "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/05-nginx.log",
+      "log_sha256": "66927ac677153b9fd1c640113082b3483870bad4b3fdf745e21e68ef4cf73a38",
+      "name": "nginx configuration test",
+      "ok": true,
+      "step": "attempt 1"
+    },
+    {
+      "actual": "X25519MLKEM768 (hybrid)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519MLKEM768",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=localhost",
+        "-wait=10s",
+        "127.0.0.1:4433"
+      ],
+      "exit_code": 0,
+      "expected": "X25519MLKEM768",
+      "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/07-tls_probe.log",
+      "log_sha256": "133180222a34b1741f813dceff85ac2e705bd0ece36458161203b868370c9f76",
+      "name": "positive control: hybrid-only client to the probe's hybrid reference server",
+      "ok": true,
+      "step": "attempt 1"
+    },
+    {
+      "actual": "no connection (remote error: tls: handshake failure)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519MLKEM768",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=localhost",
+        "-wait=10s",
+        "127.0.0.1:4434"
+      ],
+      "exit_code": 1,
+      "expected": "no connection",
+      "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/08-tls_probe.log",
+      "log_sha256": "cfbbfbce06409d227bfc7e8ad03a814fa15d1edd7980071ab1c132aa6de37481",
+      "name": "negative control: hybrid-only client to the X25519-only reference server",
+      "ok": true,
+      "step": "attempt 1"
+    },
+    {
+      "actual": "X25519 (classical)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519,P-256",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=localhost",
+        "-wait=10s",
+        "127.0.0.1:4434"
+      ],
+      "exit_code": 0,
+      "expected": "X25519",
+      "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/09-tls_probe.log",
+      "log_sha256": "13fec52f1bb68c07c710d593cf03aa04c6d936187e3df750f6d536fcf46c73d6",
+      "name": "negative control: classical client to the X25519-only reference server",
+      "ok": true,
+      "step": "attempt 1"
+    },
+    {
+      "actual": "X25519MLKEM768 (hybrid)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519MLKEM768",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=orders-edge.local",
+        "-wait=10s",
+        "127.0.0.1:8443"
+      ],
+      "exit_code": 0,
+      "expected": "X25519MLKEM768",
+      "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/10-tls_probe.log",
+      "log_sha256": "e61dc9dbb6d74f580856a03940cfa246722dcd440a2a430d21bfb8cf5d7578c0",
+      "name": "127.0.0.1:8443 (nginx): hybrid-only client",
+      "ok": true,
+      "step": "attempt 1"
+    },
+    {
+      "actual": "X25519 (classical)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519,P-256",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=orders-edge.local",
+        "-wait=10s",
+        "127.0.0.1:8443"
+      ],
+      "exit_code": 0,
+      "expected": "a classical group (older clients still connect)",
+      "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/11-tls_probe.log",
+      "log_sha256": "264c93c4c189e5af4414b5d8552b4d0f4f9e1a50f5d60f1cb8e2d15ca113b0c6",
+      "name": "127.0.0.1:8443 (nginx): classical client",
+      "ok": true,
+      "step": "attempt 1"
+    },
+    {
+      "actual": "X25519MLKEM768 (hybrid)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519MLKEM768",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=orders-edge.local",
+        "-wait=10s",
+        "127.0.0.1:9443"
+      ],
+      "exit_code": 0,
+      "expected": "X25519MLKEM768",
+      "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/12-tls_probe.log",
+      "log_sha256": "585628e8581c835356fd75c2d70ec02645b9fd314bb18c90c5d129daaa0e26f1",
+      "name": "127.0.0.1:9443 (api): hybrid-only client",
+      "ok": true,
+      "step": "attempt 1"
+    },
+    {
+      "actual": "X25519 (classical)",
+      "command": [
+        "tls_probe",
+        "connect",
+        "-groups=X25519,P-256",
+        "-ca=/etc/orders-edge/tls/ca.pem",
+        "-servername=orders-edge.local",
+        "-wait=10s",
+        "127.0.0.1:9443"
+      ],
+      "exit_code": 0,
+      "expected": "a classical group (older clients still connect)",
+      "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/13-tls_probe.log",
+      "log_sha256": "91f3a2ededdc20ae16d1c5c6e2f0430328ad8ac9cca8a1b72dcc3d14e18d0839",
+      "name": "127.0.0.1:9443 (api): classical client",
+      "ok": true,
+      "step": "attempt 1"
+    }
+  ],
+  "receipt_id": "ee9793c0149623050e9bc4c61129a3a4e37da403448e01ea810cc2e957eb54f0",
+  "repo": {
+    "commit": "7c7e5014daf65b4852b3dc08300d21420a255d15",
+    "path": "/opt/pqproof/orders-edge/current",
+    "tree": "f196979a0768819693c273046fbd850f35d23b4e",
+    "url": "https://github.com/g1mn/orders-edge"
+  },
+  "sandboxes": [
+    {
+      "architecture": "amd64",
+      "destroyed_at": "2026-11-04T23:11:05.799Z",
+      "egress": {
+        "dropped_by_policy": "not counted",
+        "reached_sinkhole": [],
+        "reached_sinkhole_not_kept": 0
+      },
+      "execs": [
+        {
+          "argv": [
+            "go",
+            "build",
+            "-trimpath",
+            "-o=tls_probe",
+            "."
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833854-probe-build-51decac4/01-go.log",
+          "log_sha256": "d89d28179fb8be429703867c0f45a29670558b3700d34358ee719488e2cb38fb",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "timed_out": false
+        }
+      ],
+      "id": "pq-1793833854-probe-build-51decac4",
+      "image": "golang:1.27-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9",
+      "image_digest": "sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9",
+      "limits": {
+        "cpus": 2,
+        "memory_mib": 2048,
+        "wall_clock_s": 300
+      },
+      "msb_commands": 5,
+      "network": [
+        "--no-net",
+        "--net-rule allow@dns,allow@203.0.113.0/24:tcp",
+        "--dns-nameserver 127.0.0.1:36063",
+        "--proxy http://127.0.0.1:40273",
+        "--max-tcp-connections 32",
+        "--net-egress-ops 200/1s"
+      ],
+      "platform_digest": "sha256:e482b31b5d30c31f9e495f4b8cbdf41429b2d74955dfbcd9c0a904483d738390",
+      "started_at": "2026-11-04T23:10:54.272Z",
+      "step": "probe build"
+    },
+    {
+      "architecture": "amd64",
+      "destroyed_at": "2026-11-04T23:11:42.385Z",
+      "egress": {
+        "dropped_by_policy": "not counted",
+        "reached_sinkhole": [
+          {
+            "at": "2026-11-04T23:11:42.059Z",
+            "bytes": 253,
+            "canaries": [
+              "CANARY-0001"
+            ],
+            "dest": "203.0.113.7:80",
+            "kind": "tcp",
+            "preview": "POST /v1/report HTTP/1.1\nHost: 203.0.113.7\nUser-Agent: Go-http-client/1.1\nContent-Length: 99\nContent-Type: application/json\nAccept-Encoding: gzip\n\n{\"canary\":\"CANARY-0001\",\"aws_credentials_prese",
+            "proto": "tcp",
+            "sha256": "dc8439d31a4f1669cab6399636cde41ed1355e785f2215a15cd85e46901310b6"
+          }
+        ],
+        "reached_sinkhole_not_kept": 0
+      },
+      "execs": [
+        {
+          "argv": [
+            "make",
+            "build"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833865-e2e-build-a0-ff3d3e32/01-make.log",
+          "log_sha256": "dce98a6f38405795d5c0ba7933194f2261f545dac472f1de800b8d6135894a7f",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 40,
+            "sha256": "155c99a55c00843c119042f71b4738995d9c50a4b2467cdea87b7ec0c936bfd4"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "make",
+            "test"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833865-e2e-build-a0-ff3d3e32/02-make.log",
+          "log_sha256": "809024b226402db468dca64d9f2f2af3aa976d89cd582d6feb9dac5780bd11af",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 314,
+            "sha256": "c7cff631595b0e884bef17de161563940e69fae4eed211c260ac991ed36514f2"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "go",
+            "build",
+            "-trimpath",
+            "-o=out/api",
+            "./cmd/api"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833865-e2e-build-a0-ff3d3e32/03-go.log",
+          "log_sha256": "b5885273a9b7ab5d2d457ed1d30b03c1644ecd2bc1b1c37fd821f68e43e2bfd1",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "timed_out": false
+        }
+      ],
+      "id": "pq-1793833865-e2e-build-a0-ff3d3e32",
+      "image": "golang:1.27-bookworm@sha256:e482b31b5d30c31f9e495f4b8cbdf41429b2d74955dfbcd9c0a904483d738390",
+      "image_digest": "sha256:e482b31b5d30c31f9e495f4b8cbdf41429b2d74955dfbcd9c0a904483d738390",
+      "limits": {
+        "cpus": 2,
+        "memory_mib": 2048,
+        "wall_clock_s": 300
+      },
+      "msb_commands": 7,
+      "network": [
+        "--no-net",
+        "--net-rule allow@dns,allow@203.0.113.0/24:tcp",
+        "--dns-nameserver 127.0.0.1:36063",
+        "--proxy http://127.0.0.1:40273",
+        "--max-tcp-connections 32",
+        "--net-egress-ops 200/1s"
+      ],
+      "platform_digest": "sha256:e482b31b5d30c31f9e495f4b8cbdf41429b2d74955dfbcd9c0a904483d738390",
+      "started_at": "2026-11-04T23:11:05.809Z",
+      "step": "baseline build"
+    },
+    {
+      "architecture": "amd64",
+      "destroyed_at": "2026-11-04T23:11:44.165Z",
+      "egress": {
+        "dropped_by_policy": "not counted",
+        "reached_sinkhole": [],
+        "reached_sinkhole_not_kept": 0
+      },
+      "execs": [
+        {
+          "argv": [
+            "tls_probe",
+            "version"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/01-tls_probe.log",
+          "log_sha256": "8b41b1fc2f445dcbffd6f50af794f594350f5585c25ef48b145ed9cac3a16f3b",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 27,
+            "sha256": "76d9b86034bb01c4d8479d9d1facc2ad17fb874703a65a2598025d59a879b151"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "cert",
+            "-hosts=localhost,127.0.0.1,orders-edge.local,orders-api.internal",
+            "/etc/orders-edge/tls"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/02-tls_probe.log",
+          "log_sha256": "788143f5e6f2c53b375e4eb653ec74436bfba57c935e0186976dfcecb28ea957",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "/usr/bin/install",
+            "-d",
+            "-o",
+            "65534",
+            "-g",
+            "65534",
+            "-m",
+            "0755",
+            "/var/cache/nginx"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/03-install.log",
+          "log_sha256": "2cdd6fe0c3dfbb8b176f2941de9cc3d08f56497a3db13df894e17c3d293b6fd8",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "/usr/bin/install",
+            "-o",
+            "65534",
+            "-g",
+            "65534",
+            "-m",
+            "0644",
+            "/dev/null",
+            "/run/orders-edge-nginx.pid"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/04-install.log",
+          "log_sha256": "8d4dabf206c4d0d729f2abf99e21d866db9e2f12fe128a462beb36da83f4a3ea",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "nginx",
+            "-t",
+            "-c",
+            "/work/src/nginx/nginx.conf"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/05-nginx.log",
+          "log_sha256": "66927ac677153b9fd1c640113082b3483870bad4b3fdf745e21e68ef4cf73a38",
+          "stderr": {
+            "bytes": 253,
+            "sha256": "79e56888b947075abb8af54868da25a13097ac7688e8579e417493b9420ad17b"
+          },
+          "stdout": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "listeners",
+            "-ports=4433,4434,8443,9443",
+            "-wait=10s"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/06-tls_probe.log",
+          "log_sha256": "8a1ca3c22545675d91d7b84f49c9a7181c98466fc6c93a02e89775cfb61a71d9",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 363,
+            "sha256": "03f217120bf07fc91744228e0065ccda6c7ee7bb18c7b5fa8a9101dc27dea2ee"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519MLKEM768",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=localhost",
+            "-wait=10s",
+            "127.0.0.1:4433"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/07-tls_probe.log",
+          "log_sha256": "133180222a34b1741f813dceff85ac2e705bd0ece36458161203b868370c9f76",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 139,
+            "sha256": "e946adaa5e4ee5f050b2c6381278355088637b3636a675eced9f613941b9aca5"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519MLKEM768",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=localhost",
+            "-wait=10s",
+            "127.0.0.1:4434"
+          ],
+          "exit_code": 1,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/08-tls_probe.log",
+          "log_sha256": "cfbbfbce06409d227bfc7e8ad03a814fa15d1edd7980071ab1c132aa6de37481",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 140,
+            "sha256": "0afa9665b7c8387583d94dbe46585843c92bf971765f05e516ff4f745c93ccb6"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519,P-256",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=localhost",
+            "-wait=10s",
+            "127.0.0.1:4434"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/09-tls_probe.log",
+          "log_sha256": "13fec52f1bb68c07c710d593cf03aa04c6d936187e3df750f6d536fcf46c73d6",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 129,
+            "sha256": "af9e4d6a25030466b8cefb8ed88c75179b79d1f3f08a00c0667c9419fa854ec8"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519MLKEM768",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=orders-edge.local",
+            "-wait=10s",
+            "127.0.0.1:8443"
+          ],
+          "exit_code": 1,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/10-tls_probe.log",
+          "log_sha256": "ed0463345c8104086af1d6ca58054970f2042a2a1ba741ad6602bcd697c1b226",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 140,
+            "sha256": "74f8bc57d4149bbb446a3c04f0560daa1c8d7c0d8ae82758233abdccc2672b51"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519,P-256",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=orders-edge.local",
+            "-wait=10s",
+            "127.0.0.1:8443"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/11-tls_probe.log",
+          "log_sha256": "d47cebc5c7e5e7c77bcd0fcda86bc786bf4e724c8918e5c4e374773320a3dea6",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 128,
+            "sha256": "44182520cf2ad1bbaeb4639860eea9274232f2cad38fa57e7e82044df737c36b"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519MLKEM768",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=orders-edge.local",
+            "-wait=10s",
+            "127.0.0.1:9443"
+          ],
+          "exit_code": 1,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/12-tls_probe.log",
+          "log_sha256": "01969d7df078bb00a824de70d1bc5014a23a2913ee5cc52b60bc57f6c22861a8",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 140,
+            "sha256": "3f70c96b28e88e9d78acbb4655c03f0e608aa7312fc6412f3e64509a0ad38995"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519,P-256",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=orders-edge.local",
+            "-wait=10s",
+            "127.0.0.1:9443"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/13-tls_probe.log",
+          "log_sha256": "37d0919ce42e11f468fccab131ff5795a8d8e5469cd2aba019a7d7fa5ad2f9ff",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 128,
+            "sha256": "061b8e330821b2ca1278a851a6522845dec8c689664539124e8931d426c9241e"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "listeners",
+            "-ports=4433,4434,8443,9443",
+            "-wait=10s"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833902-e2e-prove-a0-1a8df868/14-tls_probe.log",
+          "log_sha256": "8a1ca3c22545675d91d7b84f49c9a7181c98466fc6c93a02e89775cfb61a71d9",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 363,
+            "sha256": "03f217120bf07fc91744228e0065ccda6c7ee7bb18c7b5fa8a9101dc27dea2ee"
+          },
+          "timed_out": false
+        }
+      ],
+      "id": "pq-1793833902-e2e-prove-a0-1a8df868",
+      "image": "nginx:1.28-bookworm@sha256:3b03dfd827515a07ccf4946000f0bbdd2a4fb6aca7499249fcb6b1f9726823d6",
+      "image_digest": "sha256:3b03dfd827515a07ccf4946000f0bbdd2a4fb6aca7499249fcb6b1f9726823d6",
+      "limits": {
+        "cpus": 2,
+        "memory_mib": 1024,
+        "wall_clock_s": 120
+      },
+      "msb_commands": 25,
+      "network": [
+        "--no-net",
+        "--net-rule allow@dns,allow@203.0.113.0/24:tcp",
+        "--dns-nameserver 127.0.0.1:36063",
+        "--proxy http://127.0.0.1:40273",
+        "--max-tcp-connections 32",
+        "--net-egress-ops 200/1s"
+      ],
+      "platform_digest": "sha256:3b03dfd827515a07ccf4946000f0bbdd2a4fb6aca7499249fcb6b1f9726823d6",
+      "started_at": "2026-11-04T23:11:42.386Z",
+      "step": "baseline prove"
+    },
+    {
+      "architecture": "amd64",
+      "destroyed_at": "2026-11-04T23:12:22.920Z",
+      "egress": {
+        "dropped_by_policy": "not counted",
+        "reached_sinkhole": [
+          {
+            "at": "2026-11-04T23:12:22.546Z",
+            "bytes": 253,
+            "canaries": [
+              "CANARY-0001"
+            ],
+            "dest": "203.0.113.7:80",
+            "kind": "tcp",
+            "preview": "POST /v1/report HTTP/1.1\nHost: 203.0.113.7\nUser-Agent: Go-http-client/1.1\nContent-Length: 99\nContent-Type: application/json\nAccept-Encoding: gzip\n\n{\"canary\":\"CANARY-0001\",\"aws_credentials_prese",
+            "proto": "tcp",
+            "sha256": "dc8439d31a4f1669cab6399636cde41ed1355e785f2215a15cd85e46901310b6"
+          }
+        ],
+        "reached_sinkhole_not_kept": 0
+      },
+      "execs": [
+        {
+          "argv": [
+            "make",
+            "build"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833906-e2e-build-a1-8252fd9c/01-make.log",
+          "log_sha256": "dce98a6f38405795d5c0ba7933194f2261f545dac472f1de800b8d6135894a7f",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 40,
+            "sha256": "155c99a55c00843c119042f71b4738995d9c50a4b2467cdea87b7ec0c936bfd4"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "make",
+            "test"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833906-e2e-build-a1-8252fd9c/02-make.log",
+          "log_sha256": "7073faa1b5fa16d504a307a30997d4228865ca52743bb3d65c4d49f57b8cc464",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 314,
+            "sha256": "d2fcdc379b62d6b0cdabbb29f5b444abf431c7962104705c84977fc9de8d6072"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "go",
+            "build",
+            "-trimpath",
+            "-o=out/api",
+            "./cmd/api"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833906-e2e-build-a1-8252fd9c/03-go.log",
+          "log_sha256": "b5885273a9b7ab5d2d457ed1d30b03c1644ecd2bc1b1c37fd821f68e43e2bfd1",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "timed_out": false
+        }
+      ],
+      "id": "pq-1793833906-e2e-build-a1-8252fd9c",
+      "image": "golang:1.27-bookworm@sha256:e482b31b5d30c31f9e495f4b8cbdf41429b2d74955dfbcd9c0a904483d738390",
+      "image_digest": "sha256:e482b31b5d30c31f9e495f4b8cbdf41429b2d74955dfbcd9c0a904483d738390",
+      "limits": {
+        "cpus": 2,
+        "memory_mib": 2048,
+        "wall_clock_s": 300
+      },
+      "msb_commands": 7,
+      "network": [
+        "--no-net",
+        "--net-rule allow@dns,allow@203.0.113.0/24:tcp",
+        "--dns-nameserver 127.0.0.1:36063",
+        "--proxy http://127.0.0.1:40273",
+        "--max-tcp-connections 32",
+        "--net-egress-ops 200/1s"
+      ],
+      "platform_digest": "sha256:e482b31b5d30c31f9e495f4b8cbdf41429b2d74955dfbcd9c0a904483d738390",
+      "started_at": "2026-11-04T23:11:46.166Z",
+      "step": "attempt 1 build"
+    },
+    {
+      "architecture": "amd64",
+      "destroyed_at": "2026-11-04T23:12:24.649Z",
+      "egress": {
+        "dropped_by_policy": "not counted",
+        "reached_sinkhole": [],
+        "reached_sinkhole_not_kept": 0
+      },
+      "execs": [
+        {
+          "argv": [
+            "tls_probe",
+            "version"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/01-tls_probe.log",
+          "log_sha256": "8b41b1fc2f445dcbffd6f50af794f594350f5585c25ef48b145ed9cac3a16f3b",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 27,
+            "sha256": "76d9b86034bb01c4d8479d9d1facc2ad17fb874703a65a2598025d59a879b151"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "cert",
+            "-hosts=localhost,127.0.0.1,orders-edge.local,orders-api.internal",
+            "/etc/orders-edge/tls"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/02-tls_probe.log",
+          "log_sha256": "788143f5e6f2c53b375e4eb653ec74436bfba57c935e0186976dfcecb28ea957",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "/usr/bin/install",
+            "-d",
+            "-o",
+            "65534",
+            "-g",
+            "65534",
+            "-m",
+            "0755",
+            "/var/cache/nginx"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/03-install.log",
+          "log_sha256": "2cdd6fe0c3dfbb8b176f2941de9cc3d08f56497a3db13df894e17c3d293b6fd8",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "/usr/bin/install",
+            "-o",
+            "65534",
+            "-g",
+            "65534",
+            "-m",
+            "0644",
+            "/dev/null",
+            "/run/orders-edge-nginx.pid"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/04-install.log",
+          "log_sha256": "8d4dabf206c4d0d729f2abf99e21d866db9e2f12fe128a462beb36da83f4a3ea",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "nginx",
+            "-t",
+            "-c",
+            "/work/src/nginx/nginx.conf"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/05-nginx.log",
+          "log_sha256": "66927ac677153b9fd1c640113082b3483870bad4b3fdf745e21e68ef4cf73a38",
+          "stderr": {
+            "bytes": 253,
+            "sha256": "79e56888b947075abb8af54868da25a13097ac7688e8579e417493b9420ad17b"
+          },
+          "stdout": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "listeners",
+            "-ports=4433,4434,8443,9443",
+            "-wait=10s"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/06-tls_probe.log",
+          "log_sha256": "5948863e2a8755a49453eca782139ff80f4109d0a2850fb997e17a25b6eb167d",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 361,
+            "sha256": "2010e984bb121bbd965625f8f0a923a46cad774fc45eab77b621d56f7c3e8bca"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519MLKEM768",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=localhost",
+            "-wait=10s",
+            "127.0.0.1:4433"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/07-tls_probe.log",
+          "log_sha256": "133180222a34b1741f813dceff85ac2e705bd0ece36458161203b868370c9f76",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 139,
+            "sha256": "e946adaa5e4ee5f050b2c6381278355088637b3636a675eced9f613941b9aca5"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519MLKEM768",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=localhost",
+            "-wait=10s",
+            "127.0.0.1:4434"
+          ],
+          "exit_code": 1,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/08-tls_probe.log",
+          "log_sha256": "cfbbfbce06409d227bfc7e8ad03a814fa15d1edd7980071ab1c132aa6de37481",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 140,
+            "sha256": "0afa9665b7c8387583d94dbe46585843c92bf971765f05e516ff4f745c93ccb6"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519,P-256",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=localhost",
+            "-wait=10s",
+            "127.0.0.1:4434"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/09-tls_probe.log",
+          "log_sha256": "13fec52f1bb68c07c710d593cf03aa04c6d936187e3df750f6d536fcf46c73d6",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 129,
+            "sha256": "af9e4d6a25030466b8cefb8ed88c75179b79d1f3f08a00c0667c9419fa854ec8"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519MLKEM768",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=orders-edge.local",
+            "-wait=10s",
+            "127.0.0.1:8443"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/10-tls_probe.log",
+          "log_sha256": "e61dc9dbb6d74f580856a03940cfa246722dcd440a2a430d21bfb8cf5d7578c0",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 139,
+            "sha256": "bad5255a271c0de56d987e5d6bdcb2bf1e662738cafe315c5741fe4ec69bfb3c"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519,P-256",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=orders-edge.local",
+            "-wait=10s",
+            "127.0.0.1:8443"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/11-tls_probe.log",
+          "log_sha256": "264c93c4c189e5af4414b5d8552b4d0f4f9e1a50f5d60f1cb8e2d15ca113b0c6",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 129,
+            "sha256": "43401d1637542127932e8de5b1338740a0d76d3a61e3a4d47b67bec6f387479d"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519MLKEM768",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=orders-edge.local",
+            "-wait=10s",
+            "127.0.0.1:9443"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/12-tls_probe.log",
+          "log_sha256": "585628e8581c835356fd75c2d70ec02645b9fd314bb18c90c5d129daaa0e26f1",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 139,
+            "sha256": "b65532d7be03a15f7541f63a0f1bb8000ed299670d8b4fb4abbdbc3c1b3226ae"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "connect",
+            "-groups=X25519,P-256",
+            "-ca=/etc/orders-edge/tls/ca.pem",
+            "-servername=orders-edge.local",
+            "-wait=10s",
+            "127.0.0.1:9443"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/13-tls_probe.log",
+          "log_sha256": "91f3a2ededdc20ae16d1c5c6e2f0430328ad8ac9cca8a1b72dcc3d14e18d0839",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 129,
+            "sha256": "98af45dbc3562724ce7ff95798d9e690786c0140d37cd2b83b3af3bdc31e105a"
+          },
+          "timed_out": false
+        },
+        {
+          "argv": [
+            "tls_probe",
+            "listeners",
+            "-ports=4433,4434,8443,9443",
+            "-wait=10s"
+          ],
+          "exit_code": 0,
+          "log": "artifacts/logs/pq-1793833942-e2e-prove-a1-32cbd7f8/14-tls_probe.log",
+          "log_sha256": "5948863e2a8755a49453eca782139ff80f4109d0a2850fb997e17a25b6eb167d",
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "stdout": {
+            "bytes": 361,
+            "sha256": "2010e984bb121bbd965625f8f0a923a46cad774fc45eab77b621d56f7c3e8bca"
+          },
+          "timed_out": false
+        }
+      ],
+      "id": "pq-1793833942-e2e-prove-a1-32cbd7f8",
+      "image": "nginx:1.28-trixie@sha256:0ee3ad542a77edbf8bd220a6ad7a080134eac7b2bb123c4d4b19e06e50a1fc94",
+      "image_digest": "sha256:0ee3ad542a77edbf8bd220a6ad7a080134eac7b2bb123c4d4b19e06e50a1fc94",
+      "limits": {
+        "cpus": 2,
+        "memory_mib": 1024,
+        "wall_clock_s": 120
+      },
+      "msb_commands": 25,
+      "network": [
+        "--no-net",
+        "--net-rule allow@dns,allow@203.0.113.0/24:tcp",
+        "--dns-nameserver 127.0.0.1:36063",
+        "--proxy http://127.0.0.1:40273",
+        "--max-tcp-connections 32",
+        "--net-egress-ops 200/1s"
+      ],
+      "platform_digest": "sha256:0ee3ad542a77edbf8bd220a6ad7a080134eac7b2bb123c4d4b19e06e50a1fc94",
+      "started_at": "2026-11-04T23:12:22.921Z",
+      "step": "attempt 1 prove"
+    }
+  ],
+  "started_at": "2026-11-04T23:10:44.430Z",
+  "timeline": [
+    {
+      "ended_at": "2026-11-04T23:10:44.443Z",
+      "name": "snapshot (git clone on the host) and CBOM",
+      "started_at": "2026-11-04T23:10:44.430Z"
+    },
+    {
+      "ended_at": "2026-11-04T23:10:54.272Z",
+      "name": "plan (glm-5.3) and image pins",
+      "started_at": "2026-11-04T23:10:44.443Z"
+    },
+    {
+      "ended_at": "2026-11-04T23:10:54.272Z",
+      "name": "approval",
+      "started_at": "2026-11-04T23:10:54.272Z"
+    },
+    {
+      "ended_at": "2026-11-04T23:11:05.806Z",
+      "name": "probe build (microVM)",
+      "started_at": "2026-11-04T23:10:54.272Z"
+    },
+    {
+      "ended_at": "2026-11-04T23:11:44.166Z",
+      "name": "baseline: build and prove the unmodified snapshot (microVMs)",
+      "started_at": "2026-11-04T23:11:05.809Z"
+    },
+    {
+      "ended_at": "2026-11-04T23:12:24.650Z",
+      "name": "patch loop: edits, TLS-weakening check, build and prove (microVMs)",
+      "started_at": "2026-11-04T23:11:44.166Z"
+    },
+    {
+      "ended_at": "2026-11-04T23:12:24.670Z",
+      "name": "CBOM after and checks",
+      "started_at": "2026-11-04T23:12:24.650Z"
+    }
+  ],
+  "verdict": "pass"
+}

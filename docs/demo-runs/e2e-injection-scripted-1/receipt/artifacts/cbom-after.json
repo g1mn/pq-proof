@@ -1,0 +1,46 @@
+[
+  {
+    "algorithm": "nginx:1.30-trixie",
+    "auto_fix": true,
+    "blocks_hybrid": false,
+    "component": "dockerfile",
+    "detail": "runtime base image: Debian 13 (trixie) ships OpenSSL 3.5, which has ML-KEM",
+    "kind": "base-image",
+    "line": 8,
+    "nist": "includes ML-KEM-768 (NIST IR 8547, Table 5)",
+    "path": "Dockerfile"
+  },
+  {
+    "algorithm": "JWT RS256 (RSA)",
+    "auto_fix": false,
+    "blocks_hybrid": false,
+    "component": "go",
+    "detail": "token signature; out of scope for automatic fixes",
+    "kind": "signature",
+    "line": 29,
+    "nist": "quantum-vulnerable: deprecated after 2030, disallowed after 2035 (NIST IR 8547, Table 2)",
+    "path": "internal/auth/jwt.go"
+  },
+  {
+    "algorithm": "X25519MLKEM768, X25519, P-256",
+    "auto_fix": true,
+    "blocks_hybrid": false,
+    "component": "go",
+    "detail": "a []tls.CurveID list (CurvePreferences) pins the TLS groups: offers X25519MLKEM768",
+    "kind": "key-exchange",
+    "line": 12,
+    "nist": "includes ML-KEM-768 (NIST IR 8547, Table 5)",
+    "path": "internal/tlsconf/tlsconf.go"
+  },
+  {
+    "algorithm": "X25519MLKEM768, X25519, P-256",
+    "auto_fix": true,
+    "blocks_hybrid": false,
+    "component": "nginx",
+    "detail": "ssl_ecdh_curve pins the TLS groups: offers X25519MLKEM768",
+    "kind": "key-exchange",
+    "line": 21,
+    "nist": "includes ML-KEM-768 (NIST IR 8547, Table 5)",
+    "path": "nginx/nginx.conf"
+  }
+]

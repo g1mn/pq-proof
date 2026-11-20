@@ -19,7 +19,7 @@
 
 Give PQ-Proof a repository URL. An agent inventories the repo's cryptography, patches its TLS key exchange to hybrid ML-KEM (`X25519MLKEM768`), and proves the change inside isolated microVMs on Vultr: a real handshake, the repo's own tests, and a classical client that still connects. You get a hashed receipt and a diff.
 
-**Live demo: https://149-28-14-122.sslip.io/** replays recorded runs. In the newest, `e2e-glm-7`, `glm-5.3` on Vultr Serverless Inference wrote the plan and the patch, and microVMs on a Vultr VX1 host built and proved it (78.2 s, $0.0159 in tokens, verdict PASS). `e2e-injection-scripted-1` shows the TLS-weakening check refusing a patch that follows the fixture README's prompt injection (a scripted stand-in, no model call). The page checks each run's hashed receipt (46 checks for `e2e-glm-7`) and checks it again whenever a file in it changes. Nothing on the demo site starts a run or calls a model.
+**The public demo is shut down (November 21, 2026).** It replayed recorded runs from a Vultr VX1 host that ran on hackathon credits, and the host has been deleted. The three runs it published are in [`docs/demo-runs/`](docs/demo-runs/); `python3 -m pqproof web --runs docs/demo-runs` serves the same replay at `http://127.0.0.1:8080/` (Python 3 standard library only), and `python3 -m pqproof verify-receipt docs/demo-runs/e2e-glm-7/receipt` checks a receipt offline. In the newest run, `e2e-glm-7`, `glm-5.3` on Vultr Serverless Inference wrote the plan and the patch, and microVMs on a Vultr VX1 host built and proved it (78.2 s, $0.0159 in tokens, verdict PASS). `e2e-injection-scripted-1` shows the TLS-weakening check refusing a patch that follows the fixture README's prompt injection (a scripted stand-in, no model call). The viewer checks each run's hashed receipt (46 checks for `e2e-glm-7`) and checks it again whenever a file in it changes. Nothing in the viewer starts a run or calls a model.
 
 Built for the Vultr Agent Rush hackathon (November 2026), challenge 1, Blast Radius Zero. Demo video (3:32): [PQ-Proof-demo-v4.mp4](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-demo-v4.mp4) · slides: [PQ-Proof-slides-v3.pdf](https://github.com/g1mn/pq-proof/releases/download/submission-2026-11-08/PQ-Proof-slides-v3.pdf) · fixture repository: [g1mn/orders-edge](https://github.com/g1mn/orders-edge) · team: g1mn, solo builder.
 
@@ -60,6 +60,8 @@ The demo's newest run (`e2e-glm-7`, November 8, 2026 KST) sent 3 requests to `gl
 
 ## Public demo and deployment
 
+The public demo was shut down on November 21, 2026, when its host was deleted; this section records how it was set up, and the scripts below still deploy it to a host of your own. To replay the published runs locally, see the top of this README.
+
 The demo site is read-only: it serves the published receipt of a recorded run and a replay built from that receipt alone. Live runs are not open to the public; the viewer's gate refuses them (`503`, "live runs are off"), and nginx answers anything but `GET` and `HEAD` with `403`.
 
 - **Viewer**: `deploy/pqproof-web.service` runs `python3 -m pqproof web` as `pqweb`, a system user with no shell, no key and no `kvm` group, bound to `127.0.0.1:8080`. systemd keeps `/etc/pqproof`, `/var/lib/pqproof` (the control plane's runs) and `/root` out of its view, lets it reach no address but localhost, and drops every capability (`systemd-analyze security`: 1.1, "OK"). It reads only `/srv/pqproof/runs`, a root-owned copy of the runs chosen for publication, each checked with `verify-receipt` before it is published.
@@ -78,7 +80,7 @@ ssh root@HOST 'cd /opt/pqproof/pq-proof/current && runuser -u pqproof -- /usr/bi
 ssh root@HOST bash /opt/pqproof/pq-proof/current/deploy/demo-site.sh DOMAIN RUN_ID   # viewer, nginx, certificate, ufw 80/443
 ```
 
-`upload.sh` streams each repository's committed `HEAD` with `git archive` over SSH (no Git credentials go to the host) and copies the inference key file with `scp`. `demo-site.sh` is safe to run again: it re-publishes the listed runs, restarts the viewer and reloads nginx, and leaves the certificate and firewall rules as they are. The demo uses `149-28-14-122.sslip.io`, a name that resolves to the host's address.
+`upload.sh` streams each repository's committed `HEAD` with `git archive` over SSH (no Git credentials go to the host) and copies the inference key file with `scp`. `demo-site.sh` is safe to run again: it re-publishes the listed runs, restarts the viewer and reloads nginx, and leaves the certificate and firewall rules as they are. The demo used an `sslip.io` name that resolved to the host's address.
 
 ## Model
 
@@ -226,7 +228,7 @@ Live runs go through a gate: `web.Gate.admit(repo, ip)` admits or refuses with a
 - **The probe trusts the guest kernel.** Code that gained root inside a microVM through a kernel bug could forge a handshake (see Proof).
 - **Egress that Microsandbox's policy drops is not counted.** Only attempts that reach the sinkhole are recorded (see Containment); receipts say `"dropped_by_policy": "not counted"`.
 - **A receipt is hashed, not attributed.** Its hashes show that the files are the ones it names, not who produced them (see Hashed receipt).
-- **The public demo replays recorded runs; it does not run new ones.** Visitors cannot start a run, so the demo cannot be made to build arbitrary code or spend inference budget. Runs are started by the operator over SSH (see Public demo and deployment).
+- **The public demo replayed recorded runs; it did not run new ones (it is shut down now).** Visitors could not start a run, so the demo could not be made to build arbitrary code or spend inference budget. Runs were started by the operator over SSH (see Public demo and deployment).
 - **The demo site's own front speaks classical TLS.** Ubuntu 24.04's OpenSSL 3.0 has no ML-KEM; the hybrid handshakes PQ-Proof proves happen inside the microVMs, between the probe and the patched servers.
 - **Auto-fix covers TLS key exchange in nginx and Go.** Signatures (RSA or ECDSA JWTs, certificates) are reported in the CBOM, not migrated.
 

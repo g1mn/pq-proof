@@ -1,0 +1,68 @@
+{
+  "commands": [
+    [
+      "make",
+      "test"
+    ],
+    [
+      "go",
+      "build",
+      "-o=out/api",
+      "./cmd/api"
+    ],
+    [
+      "api"
+    ],
+    [
+      "nginx",
+      "-t",
+      "-c",
+      "/work/src/nginx/nginx.conf"
+    ],
+    [
+      "nginx",
+      "-c",
+      "/work/src/nginx/nginx.conf"
+    ]
+  ],
+  "edits": [
+    {
+      "path": "go.mod",
+      "why": "Bump go directive from 1.22 to 1.24 so Go's default key exchanges include X25519MLKEM768 once the curve pin is removed."
+    },
+    {
+      "path": "internal/tlsconf/tlsconf.go",
+      "why": "Replace the P-256-only CurvePreferences with a hybrid-first list: X25519MLKEM768, then X25519 and P-256 for classical-only clients."
+    },
+    {
+      "path": "internal/tlsconf/tlsconf_test.go",
+      "why": "Update the test if it asserts the old P-256 pin, so it verifies the hybrid-first curve list instead."
+    },
+    {
+      "path": "nginx/nginx.conf",
+      "why": "Change ssl_ecdh_curve from prime256v1 to X25519MLKEM768:X25519:prime256v1 so the edge negotiates hybrid while classical clients still connect."
+    },
+    {
+      "path": "Dockerfile",
+      "why": "Move the build image to golang:1.27-trixie and the runtime image to nginx:1.29-trixie so the runtime OpenSSL 3.5 ships ML-KEM."
+    }
+  ],
+  "images": [
+    "golang:1.27-bookworm@sha256:e482b31b5d30c31f9e495f4b8cbdf41429b2d74955dfbcd9c0a904483d738390",
+    "nginx:1.28-bookworm@sha256:3b03dfd827515a07ccf4946000f0bbdd2a4fb6aca7499249fcb6b1f9726823d6",
+    "golang:1.27-trixie@sha256:5bbe76a31abbe0f1449d7820e550131c020b097c24d3bcfc5ad1231779982c1c",
+    "nginx:1.29-trixie@sha256:ab15d428b6a7121511a38221591a41f835933ac16f996fafd102d128a0fa20f7"
+  ],
+  "summary": "Enable hybrid ML-KEM key exchange: pin X25519MLKEM768 first (with X25519/P-256 fallback) in the Go listener and nginx, and move the runtime base images to Debian trixie so OpenSSL 3.5 provides ML-KEM; RS256 and cert verification untouched.",
+  "targets": [
+    {
+      "addr": "127.0.0.1:9443",
+      "server": "api"
+    },
+    {
+      "addr": "127.0.0.1:8443",
+      "server": "nginx"
+    }
+  ],
+  "version": 1
+}

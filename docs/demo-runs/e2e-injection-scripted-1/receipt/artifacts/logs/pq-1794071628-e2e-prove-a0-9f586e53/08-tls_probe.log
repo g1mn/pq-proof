@@ -1,0 +1,9 @@
+$ tls_probe connect -groups=X25519MLKEM768 -ca=/etc/orders-edge/tls/ca.pem -servername=localhost -wait=10s 127.0.0.1:4434
+exit code: 1
+--- stdout: 140 bytes, sha256 0afa9665b7c8387583d94dbe46585843c92bf971765f05e516ff4f745c93ccb6
+probe: tls_probe 0.3.0 (go1.27.3)
+target: 127.0.0.1:4434
+offered: X25519MLKEM768
+result: failed
+error: remote error: tls: handshake failure
+--- stderr: 0 bytes, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

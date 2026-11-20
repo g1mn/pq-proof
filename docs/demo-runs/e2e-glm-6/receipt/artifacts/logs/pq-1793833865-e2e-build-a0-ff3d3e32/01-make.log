@@ -1,0 +1,5 @@
+$ make build
+exit code: 0
+--- stdout: 40 bytes, sha256 155c99a55c00843c119042f71b4738995d9c50a4b2467cdea87b7ec0c936bfd4
+go build -trimpath -o out/api ./cmd/api
+--- stderr: 0 bytes, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

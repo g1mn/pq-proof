@@ -1,0 +1,5 @@
+$ tls_probe version
+exit code: 0
+--- stdout: 27 bytes, sha256 76d9b86034bb01c4d8479d9d1facc2ad17fb874703a65a2598025d59a879b151
+tls_probe 0.3.0 (go1.27.3)
+--- stderr: 0 bytes, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

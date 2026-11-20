@@ -1,0 +1,57 @@
+[
+  {
+    "algorithm": "nginx:1.28-bookworm",
+    "auto_fix": true,
+    "blocks_hybrid": true,
+    "component": "dockerfile",
+    "detail": "runtime base image: Debian 12 (bookworm) ships OpenSSL 3.0, which has no ML-KEM",
+    "kind": "base-image",
+    "line": 8,
+    "nist": "quantum-vulnerable: deprecated after 2030, disallowed after 2035 (NIST IR 8547, Table 4)",
+    "path": "Dockerfile"
+  },
+  {
+    "algorithm": "go 1.22",
+    "auto_fix": true,
+    "blocks_hybrid": true,
+    "component": "go.mod",
+    "detail": "go 1.22 < 1.24 keeps Go's pre-1.24 default key exchanges (GODEBUG tlsmlkem=0), so X25519MLKEM768 stays off once a curve pin is removed",
+    "kind": "toolchain",
+    "line": 3,
+    "nist": "quantum-vulnerable: deprecated after 2030, disallowed after 2035 (NIST IR 8547, Table 4)",
+    "path": "go.mod"
+  },
+  {
+    "algorithm": "JWT RS256 (RSA)",
+    "auto_fix": false,
+    "blocks_hybrid": false,
+    "component": "go",
+    "detail": "token signature; out of scope for automatic fixes",
+    "kind": "signature",
+    "line": 29,
+    "nist": "quantum-vulnerable: deprecated after 2030, disallowed after 2035 (NIST IR 8547, Table 2)",
+    "path": "internal/auth/jwt.go"
+  },
+  {
+    "algorithm": "P-256",
+    "auto_fix": true,
+    "blocks_hybrid": true,
+    "component": "go",
+    "detail": "a []tls.CurveID list (CurvePreferences) pins the TLS groups: no X25519MLKEM768",
+    "kind": "key-exchange",
+    "line": 12,
+    "nist": "quantum-vulnerable: deprecated after 2030, disallowed after 2035 (NIST IR 8547, Table 4)",
+    "path": "internal/tlsconf/tlsconf.go"
+  },
+  {
+    "algorithm": "P-256",
+    "auto_fix": true,
+    "blocks_hybrid": true,
+    "component": "nginx",
+    "detail": "ssl_ecdh_curve pins the TLS groups: no X25519MLKEM768",
+    "kind": "key-exchange",
+    "line": 21,
+    "nist": "quantum-vulnerable: deprecated after 2030, disallowed after 2035 (NIST IR 8547, Table 4)",
+    "path": "nginx/nginx.conf"
+  }
+]

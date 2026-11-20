@@ -1,0 +1,10 @@
+$ tls_probe connect -groups=X25519MLKEM768 -ca=/etc/orders-edge/tls/ca.pem -servername=localhost -wait=10s 127.0.0.1:4433
+exit code: 0
+--- stdout: 139 bytes, sha256 e946adaa5e4ee5f050b2c6381278355088637b3636a675eced9f613941b9aca5
+probe: tls_probe 0.3.0 (go1.27.3)
+target: 127.0.0.1:4433
+offered: X25519MLKEM768
+result: connected
+protocol: TLS 1.3
+group: X25519MLKEM768
+--- stderr: 0 bytes, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
